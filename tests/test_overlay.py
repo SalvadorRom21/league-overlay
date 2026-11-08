@@ -279,7 +279,7 @@ class ViewTests(unittest.TestCase):
             "gameData": {"gameTime": 754, "gameMode": "CLASSIC"},
         }
         view, interval = build_view(LiveResult("ok", payload), LcuResult.down(), catalog)
-        self.assertEqual(view.headline, "In game")
+        self.assertEqual(view.headline, "In game · Summoner's Rift")
         self.assertEqual(view.picks.message, "Champion select is unavailable.")
         self.assertEqual(interval, ACTIVE_INTERVAL)
         text = " ".join(buy.item_line + buy.why for buy in view.ingame.buys)
@@ -297,7 +297,7 @@ class ViewTests(unittest.TestCase):
             position="top",
         )
         view, interval = build_view(LiveResult.down(), LcuResult("champselect", select), catalog)
-        self.assertEqual(view.headline, "Champion select")
+        self.assertEqual(view.headline, "Champion select · Summoner's Rift")
         self.assertIn("Malphite", view.picks.pick_line)
         self.assertEqual(view.ingame.message, "No active game.")
         self.assertEqual(interval, ACTIVE_INTERVAL)

@@ -9,6 +9,7 @@ from ctypes import wintypes
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from league_overlay.modeinfo import queue_id_from_gameflow
 from league_overlay.net import local_json
 
 NAME_HINTS = ("leagueclientux.exe", "leagueclient.exe")
@@ -46,6 +47,7 @@ class ChampSelect:
     position: str = ""
     locked_id: int = 0
     local_champion_id: int = 0
+    rerolls_remaining: int | None = None
 
 
 @dataclass
@@ -53,6 +55,7 @@ class LcuResult:
     status: str
     select: ChampSelect | None = None
     detail: str = ""
+    queue_id: int | None = None
 
     @staticmethod
     def down() -> LcuResult:
@@ -294,6 +297,12 @@ def parse_session(session: dict, pickable: list[int] | None) -> ChampSelect:
         if local_champion:
             ids.add(local_champion)
         resolved = sorted(ids)
+    rerolls: int | None = None
+    if "rerollsRemaining" in session:
+        try:
+            rerolls = max(0, int(session.get("rerollsRemaining") or 0))
+        except (TypeError, ValueError):
+            rerolls = None
     return ChampSelect(
         allies=allies,
         enemies=enemies,
@@ -302,6 +311,7 @@ def parse_session(session: dict, pickable: list[int] | None) -> ChampSelect:
         position=position,
         locked_id=locked,
         local_champion_id=local_champion or locked,
+        rerolls_remaining=rerolls,
     )
 
 
@@ -315,6 +325,13 @@ def _fetch_pickable(lock: Lockfile) -> list[int] | None:
     return _positive_ids(body)
 
 
+def _fetch_queue_id(lock: Lockfile) -> int | None:
+    code, body, error = local_json(lock.url("/lol-gameflow/v1/session"), headers=lock.headers())
+    if error or code != 200:
+        return None
+    return queue_id_from_gameflow(body)
+
+
 def fetch_lcu() -> LcuResult:
     try:
         path = find_lockfile()
@@ -326,16 +343,17 @@ def fetch_lcu() -> LcuResult:
         lock = parse_lockfile(read_lockfile_text(path))
     except Exception:
         return LcuResult("error", detail="Could not read the League lockfile.")
+    queue_id = _fetch_queue_id(lock)
     code, body, error = local_json(lock.url("/lol-champ-select/v1/session"), headers=lock.headers())
     if error == "down" or code is None:
         return LcuResult.down()
     if code == 404:
-        return LcuResult("open")
+        return LcuResult("open", queue_id=queue_id)
     if code != 200 or not isinstance(body, dict):
-        return LcuResult("error", detail="Champion select is unavailable.")
+        return LcuResult("error", detail="Champion select is unavailable.", queue_id=queue_id)
     try:
         pickable = _fetch_pickable(lock)
         select = parse_session(body, pickable)
     except Exception:
-        return LcuResult("error", detail="Champion select is unavailable.")
-    return LcuResult("champselect", select=select)
+        return LcuResult("error", detail="Champion select is unavailable.", queue_id=queue_id)
+    return LcuResult("champselect", select=select, queue_id=queue_id)

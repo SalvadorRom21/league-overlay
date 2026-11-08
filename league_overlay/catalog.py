@@ -121,6 +121,7 @@ def parse_items(payload: dict[str, Any]) -> dict[int, Item]:
             tags=tuple(str(tag) for tag in record.get("tags") or []),
             from_ids=_ints(record.get("from")),
             required_champion=str(record.get("requiredChampion") or ""),
+            howling_abyss=bool(maps.get("12")),
         )
     return items
 

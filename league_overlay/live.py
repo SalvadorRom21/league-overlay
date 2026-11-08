@@ -36,6 +36,14 @@ class ParsedGame:
     enemies: list[Champion] = field(default_factory=list)
     owned: dict[int, int] = field(default_factory=dict)
     item_names: list[str] = field(default_factory=list)
+    map_name: str = ""
+    map_number: int = 0
+    queue_id: int | None = None
+    seconds: int = 0
+    level: int = 0
+    augments: tuple[str, ...] = ()
+    enemy_augments: tuple[str, ...] = ()
+    augments_exposed: bool = False
 
 
 def fetch_live(timeout: float = 0.6) -> LiveResult:
@@ -72,12 +80,58 @@ def match_player(active: dict, players: list) -> dict | None:
     return None
 
 
-def _clock(seconds: object) -> str:
+def _clock(seconds: object) -> tuple[str, int]:
     try:
         total = max(0, int(float(seconds)))  # type: ignore[arg-type]
     except (TypeError, ValueError):
-        return "0:00"
-    return f"{total // 60}:{total % 60:02d}"
+        return "0:00", 0
+    return f"{total // 60}:{total % 60:02d}", total
+
+
+def _number(value: object) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
+def _augment_name(value: object) -> str:
+    if isinstance(value, str):
+        text = value.strip()
+        if "displayname_" in text.casefold():
+            text = text.split("displayname_", 1)[-1]
+        return text.replace("_", " ").strip()
+    if isinstance(value, dict):
+        for key in ("name", "displayName", "rawDisplayName", "id"):
+            found = _augment_name(value.get(key))
+            if found:
+                return found
+    return ""
+
+
+def _collect_augments(payload: object) -> tuple[list[str], bool]:
+    """Read augment names from whatever list the live client attached."""
+    found: list[str] = []
+    exposed = False
+
+    def walk(key: object, value: object) -> None:
+        nonlocal exposed
+        if not isinstance(key, str) or "augment" not in key.casefold():
+            if isinstance(value, dict):
+                for child_key, child in value.items():
+                    walk(child_key, child)
+            return
+        exposed = True
+        values = value if isinstance(value, list) else [value]
+        for entry in values:
+            name = _augment_name(entry)
+            if name and name not in found:
+                found.append(name)
+
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            walk(key, value)
+    return found, exposed
 
 
 def _owned(player: dict, catalog: DragonData) -> tuple[dict[int, int], list[str]]:
@@ -119,11 +173,24 @@ def parse_game(data: dict, catalog: DragonData) -> ParsedGame | None:
     if math.isnan(gold) or gold < 0:
         gold = 0.0
     game_data = data.get("gameData") if isinstance(data.get("gameData"), dict) else {}
-    clock = _clock(game_data.get("gameTime"))
+    clock, seconds = _clock(game_data.get("gameTime"))
     mode = str(game_data.get("gameMode") or "")
+    map_name = str(game_data.get("mapName") or "")
+    map_number = _number(game_data.get("mapNumber"))
+    queue_id = _number(game_data.get("queueId") or game_data.get("queue")) or None
     me = match_player(active, players)
     if me is None:
-        return ParsedGame(None, "Your champion", gold, clock, mode)
+        return ParsedGame(
+            None,
+            "Your champion",
+            gold,
+            clock,
+            mode,
+            map_name=map_name,
+            map_number=map_number,
+            queue_id=queue_id,
+            seconds=seconds,
+        )
     label = str(me.get("championName") or "Your champion")
     raw = str(me.get("rawChampionName") or "")
     champion = catalog.champion_from_client(raw, label)
@@ -143,6 +210,23 @@ def parse_game(data: dict, catalog: DragonData) -> ParsedGame | None:
         if resolved is not None:
             enemies.append(resolved)
     owned, item_names = _owned(me, catalog)
+    player_augments, player_exposed = _collect_augments(me)
+    active_augments, active_exposed = _collect_augments(active)
+    augments: list[str] = []
+    for name in (*player_augments, *active_augments):
+        if name not in augments:
+            augments.append(name)
+    enemy_augments: list[str] = []
+    for player in players:
+        if not isinstance(player, dict) or player is me:
+            continue
+        if team and player.get("team") == team:
+            continue
+        names, _seen = _collect_augments(player)
+        for name in names:
+            if name not in enemy_augments:
+                enemy_augments.append(name)
+    level = _number(me.get("level") or active.get("level"))
     return ParsedGame(
         champion=champion,
         champion_label=label,
@@ -153,4 +237,12 @@ def parse_game(data: dict, catalog: DragonData) -> ParsedGame | None:
         enemies=enemies,
         owned=owned,
         item_names=item_names,
+        map_name=map_name,
+        map_number=map_number,
+        queue_id=queue_id,
+        seconds=seconds,
+        level=level,
+        augments=tuple(augments),
+        enemy_augments=tuple(enemy_augments),
+        augments_exposed=player_exposed or active_exposed,
     )

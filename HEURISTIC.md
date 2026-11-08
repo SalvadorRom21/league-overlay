@@ -49,6 +49,18 @@ If champion select has your position, champions who normally play that lane are 
 
 No enemy has to be visible. With an empty enemy team the suggestion fills the role and the missing ally tags, and the text says no enemies are showing yet.
 
+## ARAM and ARAM: Mayhem
+
+Summoner's Rift rules above are not reused for these modes. The bridge is one lane. You buy in the fountain, usually while dead, instead of recalling to a side shop. Gold from minions is higher than on Summoner's Rift. Health relics restore a share of missing health (Mayhem raises that heal from the ARAM value). Poke decides the fight before anyone all-ins. Mayhem keeps those ARAM rules and adds augments at levels 3, 7, 11, and 15, picked while the fountain shop is open. Runes are off, and every champion has Presence of Mind. Those facts are from Riot's Mayhem posts and the mode page, not from a win rate.
+
+The live client reports Mayhem as gameMode `KIWI`. The client lobby reports it as queue 2400 (and the other Mayhem queue ids named in Community Dragon). Normal ARAM is gameMode `ARAM` or queue 450. If the map is Howling Abyss, Butcher's Bridge, or Koeshin's Crossing and neither signal is present, or champion select has a reroll count but no queue, the overlay says it cannot tell Mayhem from ARAM and still uses the ARAM shop, not the Rift shop.
+
+Bridge buys raise grievous wounds when the enemy heals or the team is mostly poke, because relics and spell healing stretch the fight. Tanks are pointed at health regen such as Warmog's because there is no side-lane recall. Boots stay available but rank behind a finished combat item. Mayhem's three shop legendaries (Atma's Reckoning, Rite of Ruin, Sword of Blossoming Dawn) are suggested only when the mode is certainly Mayhem. If the inventory already has two or more attack-damage or critical-strike items, a mage is shopped as a marksman for the rest of that game, and the reverse is true for a marksman stacked with ability power. The next fountain buy continues the build instead of swapping damage types. Quest rewards such as The Golden Spatula are not shop buys.
+
+Augment names are read from the live client when it sends them. A name that says grievous or putrifier skips a second grievous item. A name that says heal, omnivamp, or lifesteal raises Spirit Visage if you already heal. A shield on an enemy augment is what allows Serpent's Fang. If the client does not include augments, the panel says that instead of inventing them.
+
+Champion select on the bridge ignores lanes. It wants poke, a frontline, and sustain for the team you can see. The bench is part of the lock list. Your current champion is kept when it scores best. A better bench champion is a swap. A reroll is suggested only when enemies are visible, rerolls remain, and the champion you have scores poorly with nothing better on the bench.
+
 ## What this is not
 
 - Not a win rate, pick rate, or pro-build database.

@@ -36,8 +36,11 @@ The window starts in the top-right corner. Drag the title once interaction is on
 | --- | --- |
 | **Waiting for League** | League is not running here, or the local APIs are closed. |
 | **League is open** | The client is up. Waiting for champion select or a game. |
-| **In game** | Next buy, then the completed item, and why it answers this enemy team. |
-| **Champion select** | A suggested pick from the champions you can lock. |
+| **In game · Summoner's Rift** | Next buy, then the completed item, and why it answers this enemy team. |
+| **In game · ARAM: Mayhem** | Fountain buy for Mayhem. Healing, poke, and augments the client actually sent. |
+| **In game · ARAM** | Same bridge shop, without Mayhem-only items. If the client cannot separate Mayhem from ARAM, the note says so. |
+| **Champion select · Summoner's Rift** | A suggested pick from the champions you can lock. |
+| **Champion select · ARAM: Mayhem** | A bridge pick. Bench swaps and rerolls are used when the session includes them. |
 
 Both panels stay on screen. The active one has a gold border.
 

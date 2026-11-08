@@ -88,6 +88,7 @@ class OverlayWindow:
         self.game_enemies = self._line(self.game_card, 8, False, MUTED)
         self.game_threats = self._line(self.game_card, 8, False, GOLD)
         self.game_items = self._line(self.game_card, 8, False, MUTED)
+        self.game_detail = self._line(self.game_card, 8, False, MUTED)
         self.buy_blocks = (self._buy_block(self.game_card), self._buy_block(self.game_card))
 
         self.pick_card, self.pick_title, self.pick_message = self._card("CHAMPION SELECT")
@@ -332,6 +333,7 @@ class OverlayWindow:
             self.game_enemies,
             self.game_threats,
             self.game_items,
+            self.game_detail,
         ):
             self._pack_line(label, False)
         for block in self.buy_blocks:
@@ -342,6 +344,7 @@ class OverlayWindow:
         self._pack_line(self.game_enemies, bool(panel.enemy_line), text=panel.enemy_line)
         self._pack_line(self.game_threats, bool(panel.threat_line), text=panel.threat_line)
         self._pack_line(self.game_items, bool(panel.items_line), text=panel.items_line)
+        self._pack_line(self.game_detail, bool(panel.detail_line), text=panel.detail_line)
         for index, block in enumerate(self.buy_blocks):
             buy = panel.buys[index] if index < len(panel.buys) else None
             self._paint_buy(block, buy)

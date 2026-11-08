@@ -5,10 +5,12 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+from league_overlay.bridge import recommend_bridge, suggest_bridge
 from league_overlay.catalog import DragonData
 from league_overlay.items import Recommendation, recommend
 from league_overlay.lcu import ChampSelect, LcuResult
 from league_overlay.live import LiveResult, ParsedGame, parse_game
+from league_overlay.modeinfo import ModeInfo, detect_mode
 from league_overlay.model import Champion
 from league_overlay.picks import normalize_position, suggest
 from league_overlay.threats import threat_line, summarize
@@ -34,6 +36,7 @@ class InGamePanel:
     enemy_line: str = ""
     threat_line: str = ""
     items_line: str = ""
+    detail_line: str = ""
     buys: tuple[BuyView, ...] = ()
 
 
@@ -72,13 +75,43 @@ def _buy_view(rec: Recommendation, index: int) -> BuyView:
 
 def _champion_line(game: ParsedGame) -> str:
     gold = math.floor(game.gold)
-    line = f"{game.champion_label} · {gold}g · {game.clock}"
-    if game.mode and game.mode != "CLASSIC":
-        line = f"{line} · {game.mode}"
-    return line
+    return f"{game.champion_label} · {gold}g · {game.clock}"
 
 
-def _ingame_panel(live: LiveResult, catalog: DragonData) -> InGamePanel:
+def _detected(live: LiveResult, lcu: LcuResult) -> ModeInfo:
+    game_mode = ""
+    map_name = ""
+    map_number = None
+    queue = lcu.queue_id
+    if live.status == "ok" and isinstance(live.data, dict):
+        game_data = live.data.get("gameData") if isinstance(live.data.get("gameData"), dict) else {}
+        game_mode = str(game_data.get("gameMode") or "")
+        map_name = str(game_data.get("mapName") or "")
+        map_number = game_data.get("mapNumber")
+        if queue is None:
+            raw_queue = game_data.get("queueId")
+            if raw_queue is None and not isinstance(game_data.get("queue"), dict):
+                raw_queue = game_data.get("queue")
+            try:
+                parsed = int(raw_queue)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                parsed = 0
+            if parsed > 0:
+                queue = parsed
+    bridge_select = False
+    select = lcu.select
+    if lcu.status == "champselect" and select is not None:
+        bridge_select = select.rerolls_remaining is not None and not normalize_position(select.position)
+    return detect_mode(
+        game_mode=game_mode,
+        map_name=map_name,
+        map_number=map_number,
+        queue_id=queue,
+        bridge_select=bridge_select,
+    )
+
+
+def _ingame_panel(live: LiveResult, catalog: DragonData, mode: ModeInfo) -> InGamePanel:
     if live.status == "down":
         return InGamePanel(False, "No active game.")
     if live.status != "ok" or not isinstance(live.data, dict):
@@ -108,15 +141,38 @@ def _ingame_panel(live: LiveResult, catalog: DragonData) -> InGamePanel:
             threat,
             items_line,
         )
-    advice = recommend(game.champion, game.enemies, game.owned, game.gold, catalog.items)
+    detail = ""
+    if mode.bridge:
+        early = (game.level > 0 and game.level <= 4) or (game.level <= 0 and 0 < game.seconds < 240)
+        result = recommend_bridge(
+            game.champion,
+            game.enemies,
+            game.owned,
+            game.gold,
+            catalog.items,
+            mayhem_shop=mode.mayhem_shop,
+            early=early,
+            player_augments=game.augments,
+            enemy_augments=game.enemy_augments,
+            augments_exposed=game.augments_exposed,
+            mention_augments=mode.kind in {"mayhem", "aram-unconfirmed"},
+        )
+        advice = list(result.buys)
+        threat = result.threat_line
+        detail = result.detail
+        empty = "No fountain buy stands out for this bridge."
+    else:
+        advice = recommend(game.champion, game.enemies, game.owned, game.gold, catalog.items)
+        empty = "No counter buy stands out for this team."
     if not advice:
         return InGamePanel(
             True,
-            "No counter buy stands out for this team.",
+            empty,
             champion_line,
             enemy_line,
             threat,
             items_line,
+            detail,
         )
     return InGamePanel(
         True,
@@ -125,6 +181,7 @@ def _ingame_panel(live: LiveResult, catalog: DragonData) -> InGamePanel:
         enemy_line,
         threat,
         items_line,
+        detail,
         tuple(_buy_view(rec, index) for index, rec in enumerate(advice)),
     )
 
@@ -146,7 +203,7 @@ def _resolve(ids: list[int], catalog: DragonData) -> list[Champion]:
     return found
 
 
-def _pick_panel(lcu: LcuResult, catalog: DragonData) -> PickPanel:
+def _pick_panel(lcu: LcuResult, catalog: DragonData, mode: ModeInfo) -> PickPanel:
     if lcu.status in {"down", "error"}:
         return PickPanel(False, "Champion select is unavailable.")
     if lcu.status != "champselect" or lcu.select is None:
@@ -165,15 +222,53 @@ def _pick_panel(lcu: LcuResult, catalog: DragonData) -> PickPanel:
         )
     position = normalize_position(select.position)
     yours = select.locked_id or select.local_champion_id
+    allies = _resolve(select.allies, catalog)
+    enemies = _resolve(select.enemies, catalog)
+    taken = set(select.allies) | set(select.enemies) | set(select.bans)
+    if mode.bridge:
+        bridge_pick = suggest_bridge(
+            select.pickable,
+            allies,
+            enemies,
+            set(select.bans),
+            catalog,
+            locked_id=yours,
+            taken_ids=taken,
+            rerolls=select.rerolls_remaining,
+        )
+        if bridge_pick is None:
+            return PickPanel(True, "No champions left that you can lock.", team_line=team)
+        current = catalog.champion_by_key(yours) if yours else None
+        current_name = current.name if current is not None else (f"#{yours}" if yours else "")
+        if bridge_pick.action == "reroll":
+            left = bridge_pick.rerolls or 0
+            pick_line = f"Reroll ({left} left)"
+            if current_name:
+                pick_line += f"    your champion: {current_name}"
+        elif bridge_pick.action == "bench":
+            pick_line = f"Take {bridge_pick.champion.name} from the bench"
+            if current_name:
+                pick_line += f"    (your champion: {current_name})"
+        elif bridge_pick.action == "keep":
+            pick_line = f"Keep {bridge_pick.champion.name}"
+        else:
+            pick_line = f"Pick {bridge_pick.champion.name}"
+        alt = "Also " + ", ".join(bridge_pick.alternatives) if bridge_pick.alternatives else ""
+        meta = f"From {bridge_pick.considered} you can lock"
+        if bridge_pick.rerolls is None:
+            meta += " · reroll count was not in the client session"
+        else:
+            meta += f" · rerolls left: {bridge_pick.rerolls}"
+        return PickPanel(True, "", pick_line, bridge_pick.why, alt, team, meta)
     suggestion = suggest(
         select.pickable,
-        _resolve(select.allies, catalog),
-        _resolve(select.enemies, catalog),
+        allies,
+        enemies,
         set(select.bans),
         position,
         catalog,
         locked_id=yours,
-        taken_ids=set(select.allies) | set(select.enemies) | set(select.bans),
+        taken_ids=taken,
     )
     if suggestion is None:
         return PickPanel(True, "No champions left that you can lock.", team_line=team)
@@ -192,23 +287,38 @@ def _pick_panel(lcu: LcuResult, catalog: DragonData) -> PickPanel:
     return PickPanel(True, "", pick_line, suggestion.why, alt, team, meta)
 
 
+_NOTES = {
+    "rift": "Next buys from your champion, gold, and the five enemies.",
+    "mayhem": "ARAM: Mayhem. You shop in the fountain, usually on death. Healing and poke matter more than a Summoner's Rift lane.",
+    "aram": "ARAM. You shop in the fountain, not a side lane. This is bridge advice, not Summoner's Rift.",
+    "aram-unconfirmed": "Could not tell ARAM: Mayhem from normal ARAM. Showing ARAM advice, not Summoner's Rift.",
+}
+_SELECT_NOTES = {
+    "rift": "A pick from the champions you can actually lock.",
+    "mayhem": "ARAM: Mayhem. A bridge pick from the champions you can lock, including a bench swap or a reroll.",
+    "aram": "ARAM. A bridge pick from the champions you can lock, including a bench swap or a reroll.",
+    "aram-unconfirmed": "Could not tell ARAM: Mayhem from normal ARAM. Showing an ARAM pick, not a Summoner's Rift lane.",
+}
+
+
 def build_view(live: LiveResult, lcu: LcuResult, catalog: DragonData) -> tuple[OverlayView, float]:
-    ingame = _ingame_panel(live, catalog)
-    picks = _pick_panel(lcu, catalog)
+    detected = _detected(live, lcu)
+    ingame = _ingame_panel(live, catalog, detected)
+    picks = _pick_panel(lcu, catalog, detected)
     in_game = live.status == "ok" and ingame.active
     in_select = lcu.status == "champselect"
     if in_game:
         mode, headline, note, interval = (
             "ingame",
-            "In game",
-            "Next buys from your champion, gold, and the five enemies.",
+            f"In game · {detected.label}",
+            _NOTES[detected.kind],
             ACTIVE_INTERVAL,
         )
     elif in_select:
         mode, headline, note, interval = (
             "champselect",
-            "Champion select",
-            "A pick from the champions you can actually lock.",
+            f"Champion select · {detected.label}",
+            _SELECT_NOTES[detected.kind],
             ACTIVE_INTERVAL,
         )
     elif lcu.status == "open":

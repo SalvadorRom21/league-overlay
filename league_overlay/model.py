@@ -34,6 +34,7 @@ class Item:
     tags: tuple[str, ...]
     from_ids: tuple[int, ...]
     required_champion: str
+    howling_abyss: bool = False
 
     def shop_price(self) -> int:
         """Gold to pay for this step: combine cost if it has a recipe, else full cost."""
