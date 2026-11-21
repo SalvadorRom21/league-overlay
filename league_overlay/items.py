@@ -32,7 +32,12 @@ TAG_WORD = {
     "heal": "healing",
     "attack_speed": "attack speed",
     "burst": "burst",
+    "mr": "magic resist",
+    "shield": "shields",
 }
+LAST_WHISPER_ID = 3035
+TEAR_ID = 3070
+BASIC_BOOTS_ID = 1001
 
 ALL = frozenset(
     {"Tank", "Fighter", "Assassin", "Marksman", "Mage", "Battlemage", "Support"}
@@ -160,10 +165,10 @@ RULES: tuple[ItemRule, ...] = (
     ),
     ItemRule(3302, frozenset({"Marksman", "Fighter"}), (("tank", 1.5),), "pen", "Armor and magic penetration on-hit"),
     ItemRule(6694, AD_BRUISER, (("tank", 1.55),), "pen", "Armor penetration on abilities"),
-    ItemRule(3135, AP, (("tank", 1.7),), "pen", "Magic penetration"),
-    ItemRule(3137, AP, (("tank", 1.45),), "pen", "Magic penetration"),
-    ItemRule(6653, AP, (("tank", 1.65),), "pen", "A max-health burn"),
-    ItemRule(8010, frozenset({"Mage", "Battlemage"}), (("tank", 1.4),), "pen", "Magic resist shred"),
+    ItemRule(3135, AP, (("tank", 1.7), ("mr", 1.5)), "pen", "Magic penetration"),
+    ItemRule(3137, AP, (("tank", 1.45), ("mr", 1.3)), "pen", "Magic penetration"),
+    ItemRule(6653, AP, (("tank", 1.65), ("mr", 1.2)), "pen", "A max-health burn"),
+    ItemRule(8010, frozenset({"Mage", "Battlemage"}), (("tank", 1.4), ("mr", 1.1)), "pen", "Magic resist shred"),
     ItemRule(
         3157,
         frozenset({"Mage", "Battlemage", "Support"}),
@@ -300,13 +305,165 @@ def _owned_names(completed_id: int, owned: dict[int, int], items: dict[int, Item
 
 
 def _owns_boots(owned: dict[int, int], items: dict[int, Item]) -> bool:
+    """True once a finished pair is in the inventory.
+
+    Basic Boots are the component. The next buy can still finish that pair.
+    """
     for item_id, count in owned.items():
-        if count <= 0:
+        if count <= 0 or item_id == BASIC_BOOTS_ID:
             continue
         meta = items.get(item_id)
         if meta is not None and "Boots" in meta.tags:
             return True
     return False
+
+
+def component_ids(item_id: int, items: dict[int, Item]) -> set[int]:
+    found: set[int] = set()
+    stack = [item_id]
+    while stack:
+        current = stack.pop()
+        if current in found:
+            continue
+        found.add(current)
+        meta = items.get(current)
+        if meta is None:
+            continue
+        stack.extend(meta.from_ids)
+        if meta.special_recipe:
+            stack.append(meta.special_recipe)
+    return found
+
+
+def unique_keys(item_id: int, items: dict[int, Item]) -> set[str]:
+    """Shop locks that this item belongs to: boots, Lifeline, Last Whisper, and the rest."""
+    meta = items.get(item_id)
+    if meta is None:
+        return set()
+    keys = set(meta.uniques)
+    if "Boots" in meta.tags:
+        keys.add("boots")
+    comps = component_ids(item_id, items)
+    if LAST_WHISPER_ID in comps:
+        keys.add("last_whisper")
+    if TEAR_ID in comps:
+        keys.add("tear")
+    return keys
+
+
+def completion_blocked(completed_id: int, owned: dict[int, int], items: dict[int, Item]) -> bool:
+    """True when the completed item is owned or a one-of rule already used its component.
+
+    A loose component of this same item does not block it. That component is
+    progress, and the next buy is whatever piece is still missing.
+    """
+    if owned.get(completed_id, 0) > 0:
+        return True
+    keys = unique_keys(completed_id, items)
+    if not keys:
+        return False
+    parts = component_ids(completed_id, items)
+    for owned_id, count in owned.items():
+        if count <= 0 or owned_id in parts:
+            continue
+        if unique_keys(owned_id, items) & keys:
+            return True
+    return False
+
+
+def _lookup_item(item_id: int, items: dict[int, Item]) -> Item | None:
+    meta = items.get(item_id)
+    if meta is None and item_id >= 10000:
+        meta = items.get(item_id % 10000)
+    return meta
+
+
+def item_pressure(
+    builds: tuple[tuple[str, tuple[int, ...]], ...] | list,
+    items: dict[int, Item],
+) -> tuple[dict[str, float], dict[str, list[str]], str]:
+    """Extra threat from the items enemies already bought."""
+    totals = {"heal": 0.0, "tank": 0.0, "mr": 0.0, "shield": 0.0}
+    names: dict[str, list[str]] = {key: [] for key in totals}
+    grouped = {"tank": [], "mr": [], "heal": [], "shield": []}
+    for champ_name, ids in builds:
+        heal = armor = resist = shield = 0.0
+        for raw_id in ids:
+            try:
+                item_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            meta = _lookup_item(item_id, items)
+            if meta is None:
+                continue
+            tags = set(meta.tags)
+            # Zhonya's and Wooglet's list Armor, but they are ability-power items.
+            mage_item = "SpellDamage" in tags
+            if tags & {"LifeSteal", "SpellVamp"} and meta.total >= 400:
+                heal += 0.9 if meta.total >= 2000 else 0.55
+            if "Armor" in tags and not mage_item and meta.total >= 300:
+                armor += 0.45 if meta.total >= 1000 else 0.2
+            if "SpellBlock" in tags and not mage_item and meta.total >= 300:
+                resist += 0.45 if meta.total >= 1000 else 0.2
+            if "Health" in tags and not mage_item and meta.total >= 2500:
+                armor += 0.25
+            if "lifeline" in meta.uniques or "shield" in meta.name.casefold():
+                shield += 1.0
+        if heal > 0:
+            totals["heal"] += min(heal, 1.5)
+            grouped["heal"].append(str(champ_name))
+            names["heal"].append(str(champ_name))
+        if armor > 0:
+            totals["tank"] += min(armor, 1.2)
+            grouped["tank"].append(str(champ_name))
+            names["tank"].append(str(champ_name))
+        if resist > 0:
+            totals["mr"] += min(resist, 1.2)
+            grouped["mr"].append(str(champ_name))
+            names["mr"].append(str(champ_name))
+        if shield > 0:
+            totals["shield"] += shield
+            grouped["shield"].append(str(champ_name))
+            names["shield"].append(str(champ_name))
+    parts: list[str] = []
+    labels = (
+        ("tank", "armor"),
+        ("mr", "magic resist"),
+        ("heal", "healing"),
+        ("shield", "shields"),
+    )
+    for key, label in labels:
+        found: list[str] = []
+        for name in grouped[key]:
+            if name not in found:
+                found.append(name)
+        if found:
+            parts.append(f"{label} on " + ", ".join(found[:3]))
+    line = "They're building: " + "; ".join(parts) + "." if parts else ""
+    return totals, names, line
+
+
+def absorb_pressure(threats: object, builds: tuple | list, items: dict[int, Item]) -> str:
+    totals, names, line = item_pressure(builds, items)
+    threats.heal += totals["heal"]  # type: ignore[attr-defined]
+    threats.tank += totals["tank"]  # type: ignore[attr-defined]
+    if hasattr(threats, "mr"):
+        threats.mr += totals["mr"]  # type: ignore[attr-defined]
+    if hasattr(threats, "shield"):
+        threats.shield += totals["shield"]  # type: ignore[attr-defined]
+    threat_names = getattr(threats, "names", None)
+    if isinstance(threat_names, dict):
+        for tag, found in names.items():
+            bucket = threat_names.setdefault(tag, [])
+            for name in found:
+                if name not in bucket:
+                    bucket.append(name)
+    return line
+
+
+def enemy_build_line(builds: tuple | list, items: dict[int, Item]) -> str:
+    _totals, _names, line = item_pressure(builds, items)
+    return line
 
 
 def _grievous_allow(owned: dict[int, int]) -> set[int] | None:
@@ -359,10 +516,12 @@ def recommend(
     owned: dict[int, int],
     gold: float,
     items: dict[int, Item],
+    enemy_builds: tuple[tuple[str, tuple[int, ...]], ...] | list = (),
     limit: int = 2,
 ) -> list[Recommendation]:
     """Up to `limit` buy paths, best counter first."""
     threats = summarize(enemies)
+    absorb_pressure(threats, enemy_builds, items)
     profile = build_profile(champion)
     grievous_allow = _grievous_allow(owned)
     boots_owned = _owns_boots(owned, items)
@@ -377,7 +536,7 @@ def recommend(
         meta = items.get(rule.item_id)
         if not _shop_item(meta):
             continue
-        if owned.get(rule.item_id, 0) > 0:
+        if completion_blocked(rule.item_id, owned, items):
             continue
         score = sum(threats.value(tag) * weight for tag, weight in rule.weights)
         if rule.item_id == 3065 and champion.id in HEAL_CHAMPS and threats.ap >= 1:

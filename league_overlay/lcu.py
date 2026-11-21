@@ -50,16 +50,218 @@ class ChampSelect:
     rerolls_remaining: int | None = None
 
 
+@dataclass(frozen=True)
+class PlayerBoard:
+    champion_id: int
+    champion_name: str
+    team_id: int
+    local: bool
+    items: tuple[int, ...]
+    augments: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class MatchBoard:
+    game_id: int
+    queue_id: int | None
+    players: tuple[PlayerBoard, ...]
+
+    def local_player(self) -> PlayerBoard | None:
+        for player in self.players:
+            if player.local:
+                return player
+        return None
+
+    def enemy_players(self) -> tuple[PlayerBoard, ...]:
+        local = self.local_player()
+        found: list[PlayerBoard] = []
+        for player in self.players:
+            if player.local:
+                continue
+            if local is not None and local.team_id and player.team_id and player.team_id == local.team_id:
+                continue
+            found.append(player)
+        return tuple(found)
+
+
 @dataclass
 class LcuResult:
     status: str
     select: ChampSelect | None = None
     detail: str = ""
     queue_id: int | None = None
+    board: MatchBoard | None = None
 
     @staticmethod
     def down() -> LcuResult:
         return LcuResult("down")
+
+
+_SKIP_ITEMS = {3330, 3340, 3363, 3364, 3513}
+_board_cache: dict[str, object] = {"game_id": 0, "at": 0.0, "board": None}
+
+
+def _keep_item(item_id: int) -> bool:
+    return 0 < item_id < 200_000 and item_id not in _SKIP_ITEMS
+
+
+def _augments_from_stats(stats: dict) -> tuple[int, ...]:
+    found: list[int] = []
+    for index in range(1, 7):
+        raw = stats.get(f"playerAugment{index}")
+        if raw is None:
+            raw = stats.get(f"PLAYER_AUGMENT_{index}")
+        value = _number(raw)
+        if value > 0:
+            found.append(value)
+    return tuple(found)
+
+
+def _items_from_player(player: dict, stats: dict) -> tuple[int, ...]:
+    found: list[int] = []
+    raw = player.get("items")
+    if isinstance(raw, list) and raw:
+        for entry in raw:
+            if isinstance(entry, dict):
+                item_id = _number(entry.get("itemID") or entry.get("id"))
+            else:
+                item_id = _number(entry)
+            if _keep_item(item_id):
+                found.append(item_id)
+        return tuple(found)
+    for index in range(7):
+        raw_id = stats.get(f"item{index}")
+        if raw_id is None:
+            raw_id = stats.get(f"ITEM_{index}")
+        item_id = _number(raw_id)
+        if _keep_item(item_id):
+            found.append(item_id)
+    return tuple(found)
+
+
+def parse_eog(body: dict) -> MatchBoard | None:
+    """End-of-game screen. This is where Mayhem augment ids show up for every player."""
+    if not isinstance(body, dict) or not isinstance(body.get("teams"), list):
+        return None
+    players: list[PlayerBoard] = []
+    for team in body["teams"]:
+        if not isinstance(team, dict):
+            continue
+        team_id = _number(team.get("teamId"))
+        for player in team.get("players") or []:
+            if not isinstance(player, dict):
+                continue
+            stats = player.get("stats") if isinstance(player.get("stats"), dict) else {}
+            players.append(
+                PlayerBoard(
+                    champion_id=_number(player.get("championId")),
+                    champion_name=str(player.get("championName") or ""),
+                    team_id=team_id,
+                    local=bool(player.get("isLocalPlayer")),
+                    items=_items_from_player(player, stats),
+                    augments=_augments_from_stats(stats),
+                )
+            )
+    if not players:
+        return None
+    queue = _number(body.get("queueId")) or None
+    return MatchBoard(_number(body.get("gameId")), queue, tuple(players))
+
+
+def parse_match(body: dict, local_puuid: str = "") -> MatchBoard | None:
+    """Full match history game. Same augment ids, after the client has saved the match."""
+    if not isinstance(body, dict) or not isinstance(body.get("participants"), list):
+        return None
+    identities: dict[int, str] = {}
+    for ident in body.get("participantIdentities") or []:
+        if not isinstance(ident, dict):
+            continue
+        person = ident.get("player") if isinstance(ident.get("player"), dict) else {}
+        identities[_number(ident.get("participantId"))] = str(person.get("puuid") or "")
+    players: list[PlayerBoard] = []
+    for part in body["participants"]:
+        if not isinstance(part, dict):
+            continue
+        stats = part.get("stats") if isinstance(part.get("stats"), dict) else {}
+        puuid = identities.get(_number(part.get("participantId")), "")
+        players.append(
+            PlayerBoard(
+                champion_id=_number(part.get("championId")),
+                champion_name="",
+                team_id=_number(part.get("teamId")),
+                local=bool(local_puuid) and puuid == local_puuid,
+                items=_items_from_player(part, stats),
+                augments=_augments_from_stats(stats),
+            )
+        )
+    if not players:
+        return None
+    queue = _number(body.get("queueId")) or None
+    return MatchBoard(_number(body.get("gameId")), queue, tuple(players))
+
+
+def _number(value: object) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
+def _current_puuid(lock: Lockfile) -> str:
+    code, body, error = local_json(
+        lock.url("/lol-summoner/v1/current-summoner"),
+        headers=lock.headers(),
+        timeout=1.5,
+    )
+    if error or code != 200 or not isinstance(body, dict):
+        return ""
+    return str(body.get("puuid") or "")
+
+
+def load_board(lock: Lockfile, session: dict | None) -> MatchBoard | None:
+    """Read augments for the current game id. Retries slowly until the client has saved them."""
+    if not isinstance(session, dict):
+        return None
+    game_data = session.get("gameData") if isinstance(session.get("gameData"), dict) else {}
+    game_id = _number(game_data.get("gameId"))
+    if game_id <= 0:
+        return None
+    now = time.monotonic()
+    cached_id = _board_cache.get("game_id")
+    cached_board = _board_cache.get("board")
+    age = now - float(_board_cache.get("at") or 0)
+    if cached_id == game_id and isinstance(cached_board, MatchBoard) and age < 3:
+        return cached_board
+    if cached_id == game_id and cached_board is None and age < 2:
+        return None
+    board = _read_board(lock, game_id)
+    queue = queue_id_from_gameflow(session)
+    if board is not None and board.queue_id is None and queue:
+        board = MatchBoard(board.game_id, queue, board.players)
+    _board_cache["game_id"] = game_id
+    _board_cache["at"] = now
+    _board_cache["board"] = board
+    return board
+
+
+def _read_board(lock: Lockfile, game_id: int) -> MatchBoard | None:
+    code, body, error = local_json(
+        lock.url("/lol-end-of-game/v1/eog-stats-block"),
+        headers=lock.headers(),
+        timeout=1.5,
+    )
+    if not error and code == 200 and isinstance(body, dict) and _number(body.get("gameId")) == game_id:
+        board = parse_eog(body)
+        if board is not None and any(player.augments for player in board.players):
+            return board
+    code, body, error = local_json(
+        lock.url(f"/lol-match-history/v1/games/{game_id}"),
+        headers=lock.headers(),
+        timeout=1.5,
+    )
+    if error or code != 200 or not isinstance(body, dict):
+        return None
+    return parse_match(body, _current_puuid(lock))
 
 
 def parse_lockfile(text: str) -> Lockfile:
@@ -325,11 +527,11 @@ def _fetch_pickable(lock: Lockfile) -> list[int] | None:
     return _positive_ids(body)
 
 
-def _fetch_queue_id(lock: Lockfile) -> int | None:
+def _gameflow(lock: Lockfile) -> dict | None:
     code, body, error = local_json(lock.url("/lol-gameflow/v1/session"), headers=lock.headers())
-    if error or code != 200:
+    if error or code != 200 or not isinstance(body, dict):
         return None
-    return queue_id_from_gameflow(body)
+    return body
 
 
 def fetch_lcu() -> LcuResult:
@@ -343,17 +545,25 @@ def fetch_lcu() -> LcuResult:
         lock = parse_lockfile(read_lockfile_text(path))
     except Exception:
         return LcuResult("error", detail="Could not read the League lockfile.")
-    queue_id = _fetch_queue_id(lock)
+    session = _gameflow(lock)
+    queue_id = queue_id_from_gameflow(session) if session else None
+    board = None
+    try:
+        board = load_board(lock, session)
+    except Exception:
+        board = None
+    if queue_id is None and board is not None and board.queue_id:
+        queue_id = board.queue_id
     code, body, error = local_json(lock.url("/lol-champ-select/v1/session"), headers=lock.headers())
     if error == "down" or code is None:
         return LcuResult.down()
     if code == 404:
-        return LcuResult("open", queue_id=queue_id)
+        return LcuResult("open", queue_id=queue_id, board=board)
     if code != 200 or not isinstance(body, dict):
-        return LcuResult("error", detail="Champion select is unavailable.", queue_id=queue_id)
+        return LcuResult("error", detail="Champion select is unavailable.", queue_id=queue_id, board=board)
     try:
         pickable = _fetch_pickable(lock)
         select = parse_session(body, pickable)
     except Exception:
-        return LcuResult("error", detail="Champion select is unavailable.", queue_id=queue_id)
-    return LcuResult("champselect", select=select, queue_id=queue_id)
+        return LcuResult("error", detail="Champion select is unavailable.", queue_id=queue_id, board=board)
+    return LcuResult("champselect", select=select, queue_id=queue_id, board=board)

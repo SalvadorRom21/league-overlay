@@ -11,12 +11,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from league_overlay.augments import flags_from_text
 from league_overlay.catalog import DragonData
 from league_overlay.items import (
     Recommendation,
     _grievous_allow,
     _owned_names,
     _owns_boots,
+    absorb_pressure,
+    completion_blocked,
     next_purchase,
 )
 from league_overlay.model import Champion, Item
@@ -53,11 +56,16 @@ class BridgeThreats:
     attack_speed: float = 0.0
     burst: float = 0.0
     poke: float = 0.0
+    mr: float = 0.0
+    shield: float = 0.0
     names: dict[str, list[str]] | None = None
 
     def __post_init__(self) -> None:
         if self.names is None:
-            self.names = {key: [] for key in ("ad", "ap", "tank", "heal", "attack_speed", "burst", "poke")}
+            self.names = {
+                key: []
+                for key in ("ad", "ap", "tank", "heal", "attack_speed", "burst", "poke", "mr", "shield")
+            }
 
     def value(self, tag: str) -> float:
         return float(getattr(self, tag, 0.0))
@@ -126,9 +134,9 @@ RULES: tuple[BridgeRule, ...] = (
     BridgeRule(3068, frozenset({"Tank"}), (("ad", 0.7),), "armor", "Armor that burns whoever stands on you"),
     BridgeRule(3190, frozenset({"Tank", "Support"}), (("poke", 0.7), ("burst", 0.45)), "armor", "A team shield while everyone is in one fight"),
     BridgeRule(4628, AP, (("poke", 1.35),), "poke", "Damage on the long-range spells that define the bridge"),
-    BridgeRule(6653, AP, (("tank", 1.45), ("poke", 0.35)), "poke", "A burn into the frontline you cannot walk around"),
+    BridgeRule(6653, AP, (("tank", 1.45), ("poke", 0.35), ("mr", 1.15)), "poke", "A burn into the frontline you cannot walk around"),
     BridgeRule(6655, frozenset({"Mage"}), (("burst", 0.8),), "poke", "Burst into squishy targets once the wave is poked down", base=0.6),
-    BridgeRule(6695, CARRY, (("poke", 0.2),), "shields", "Cuts shields. Only when an enemy augment actually grants one", base=0.0),
+    BridgeRule(6695, CARRY, (("poke", 0.2),), "shields", "Cuts shields from an enemy item or augment", base=0.0),
     BridgeRule(3157, frozenset({"Mage", "Battlemage", "Support"}), (("burst", 1.25), ("ad", 0.55)), "anti_burst", "Stasis when the bridge fight collapses onto you"),
     BridgeRule(
         6673,
@@ -178,7 +186,7 @@ RULES: tuple[BridgeRule, ...] = (
     BridgeRule(
         123430,
         frozenset({"Mage", "Battlemage"}),
-        (("poke", 0.35), ("burst", 0.2)),
+        (("poke", 0.35), ("burst", 0.2), ("mr", 0.8)),
         "mayhem",
         "Mayhem item. Spell casts grant critical strike and a shield",
         base=3.8,
@@ -267,7 +275,14 @@ def bridge_threats(enemies: list[Champion], enemy_augments: tuple[str, ...] = ()
         threats.heal += 1
         threats.names["heal"].append("an enemy augment")
     if "shield" in flags:
-        threats.names.setdefault("shield", []).append("an enemy augment")
+        threats.shield += 1
+        threats.names["shield"].append("an enemy augment")
+    if "armor" in flags:
+        threats.tank += 0.6
+        threats.names["tank"].append("an enemy augment")
+    if "mr" in flags:
+        threats.mr += 0.6
+        threats.names["mr"].append("an enemy augment")
     return threats
 
 
@@ -280,6 +295,7 @@ def threat_line(threats: BridgeThreats) -> str:
         ("Heal", threats.heal),
         ("Tank", threats.tank),
         ("Burst", threats.burst),
+        ("MR", threats.mr),
     ):
         shown = round(value)
         if shown >= 1:
@@ -288,17 +304,8 @@ def threat_line(threats: BridgeThreats) -> str:
 
 
 def augment_flags(names: tuple[str, ...] | list[str]) -> set[str]:
-    """Tags we can read from augment names the client already sent. No win rates."""
-    flags: set[str] = set()
-    for name in names:
-        text = name.casefold()
-        if any(word in text for word in ("grievous", "putrifier")):
-            flags.add("grievous")
-        if any(word in text for word in ("omnivamp", "lifesteal", "spellvamp", "heal")):
-            flags.add("heal")
-        if "shield" in text:
-            flags.add("shield")
-    return flags
+    """Tags read from augment names and descriptions the client already sent."""
+    return set(flags_from_text(*names))
 
 
 def _on_bridge_shop(meta: Item | None, items: dict[int, Item]) -> bool:
@@ -327,6 +334,8 @@ def _explain(rule: BridgeRule, threats: BridgeThreats) -> str:
         "tank": "tanks",
         "burst": "burst",
         "attack_speed": "attack speed",
+        "mr": "magic resist",
+        "shield": "shields",
     }
     assert threats.names is not None
     for score, tag in ranked:
@@ -342,18 +351,41 @@ def _explain(rule: BridgeRule, threats: BridgeThreats) -> str:
     return f"{rule.summary} - {'; '.join(bits)}"
 
 
-def _augment_detail(player: tuple[str, ...], exposed: bool, skipped_grievous: bool) -> str:
-    if not exposed:
-        return "Augments were not in the live client data."
-    if not player:
-        return "No augments equipped yet."
-    shown = ", ".join(player[:4])
-    if len(player) > 4:
-        shown += f" +{len(player) - 4}"
-    line = f"Augments: {shown}"
+def _clip(names: tuple[str, ...] | list[str], limit: int) -> str:
+    shown = list(names)
+    text = ", ".join(shown[:limit])
+    extra = len(shown) - limit
+    if extra > 0:
+        text += f" +{extra}"
+    return text
+
+
+def match_detail(
+    player: tuple[str, ...] = (),
+    enemy: tuple[str, ...] = (),
+    *,
+    exposed: bool = False,
+    skipped_grievous: bool = False,
+    building: str = "",
+    mention_missing: bool = True,
+) -> str:
+    lines: list[str] = []
+    if player:
+        lines.append("Your augments: " + _clip(player, 6))
+    elif mention_missing:
+        if not exposed:
+            lines.append(
+                "Augments were not in the live client data. They show here once the client records the match."
+            )
+        else:
+            lines.append("No augments equipped yet.")
+    if enemy:
+        lines.append("Enemy augments: " + _clip(enemy, 8))
+    if building:
+        lines.append(building)
     if skipped_grievous:
-        line += ". Skipped another grievous-wounds item."
-    return line
+        lines.append("Skipped another grievous-wounds item.")
+    return "\n".join(lines)
 
 
 def shop_profile(champion: Champion, owned: dict[int, int], items: dict[int, Item]) -> str:
@@ -394,16 +426,19 @@ def recommend_bridge(
     early: bool = False,
     player_augments: tuple[str, ...] = (),
     enemy_augments: tuple[str, ...] = (),
+    player_augment_text: tuple[str, ...] = (),
+    enemy_augment_text: tuple[str, ...] = (),
+    enemy_builds: tuple[tuple[str, tuple[int, ...]], ...] | list = (),
     augments_exposed: bool = False,
     mention_augments: bool = False,
     limit: int = 2,
 ) -> BridgeBuyResult:
-    threats = bridge_threats(enemies, enemy_augments)
+    threats = bridge_threats(enemies, enemy_augment_text or enemy_augments)
+    building = absorb_pressure(threats, enemy_builds, items)
     profile = shop_profile(champion, owned, items)
-    flags = augment_flags(player_augments)
+    flags = augment_flags(player_augment_text or player_augments)
     grievous_allow = _grievous_allow(owned)
     skipped_grievous = False
-    enemy_flags = augment_flags(enemy_augments)
     boots_owned = _owns_boots(owned, items)
     item_count = sum(count for count in owned.values() if count > 0)
     scored: list[tuple[float, int, BridgeRule]] = []
@@ -418,16 +453,18 @@ def recommend_bridge(
             continue
         if rule.kind == "grievous" and grievous_allow is not None and rule.item_id not in grievous_allow:
             continue
-        if rule.kind == "shields" and "shield" not in enemy_flags:
+        if rule.kind == "shields" and threats.shield < 1:
             continue
         if rule.item_id == 124011 and champion.id not in HEAL_CHAMPS and profile != "Support":
             continue
         meta = items.get(rule.item_id)
         if not _on_bridge_shop(meta, items):
             continue
-        if owned.get(rule.item_id, 0) > 0:
+        if completion_blocked(rule.item_id, owned, items):
             continue
         score = rule.base + sum(threats.value(tag) * weight for tag, weight in rule.weights)
+        if rule.kind == "shields":
+            score += 2.4
         if rule.kind == "boots":
             score *= BOOTS_FACTOR
         if rule.item_id == 3065 and (champion.id in HEAL_CHAMPS or "heal" in flags):
@@ -473,8 +510,15 @@ def recommend_bridge(
         if len(buys) >= limit:
             break
     detail = ""
-    if mention_augments:
-        detail = _augment_detail(player_augments, augments_exposed or bool(player_augments), skipped_grievous)
+    if mention_augments or building:
+        detail = match_detail(
+            player_augments if mention_augments else (),
+            enemy_augments if mention_augments else (),
+            exposed=augments_exposed or bool(player_augments),
+            skipped_grievous=skipped_grievous,
+            building=building,
+            mention_missing=mention_augments,
+        )
     return BridgeBuyResult(tuple(buys), threat_line(threats), detail)
 
 

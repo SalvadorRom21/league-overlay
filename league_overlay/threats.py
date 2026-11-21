@@ -160,6 +160,8 @@ class Threats:
     heal: float = 0.0
     attack_speed: float = 0.0
     burst: float = 0.0
+    mr: float = 0.0
+    shield: float = 0.0
     names: dict[str, list[str]] = field(default_factory=dict)
 
     def value(self, tag: str) -> float:
@@ -167,7 +169,7 @@ class Threats:
 
 
 def _names() -> dict[str, list[str]]:
-    return {key: [] for key in ("ad", "ap", "tank", "heal", "attack_speed", "burst")}
+    return {key: [] for key in ("ad", "ap", "tank", "heal", "attack_speed", "burst", "mr", "shield")}
 
 
 def damage_type(champ: Champion) -> str:
@@ -306,6 +308,7 @@ def threat_line(threats: Threats) -> str:
         ("AD", threats.ad),
         ("AP", threats.ap),
         ("Tank", threats.tank),
+        ("MR", threats.mr),
         ("Heal", threats.heal),
         ("AS", threats.attack_speed),
         ("Burst", threats.burst),

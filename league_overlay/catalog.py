@@ -20,6 +20,25 @@ DATA_URL = "https://ddragon.leagueoflegends.com/cdn/{version}/data/en_US/{name}.
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 REFRESH_OK_SECONDS = 6 * 60 * 60
 REFRESH_FAIL_SECONDS = 60
+_PASSIVE = re.compile(r"<passive>([^<]+)</passive>", re.IGNORECASE)
+_NAMED_UNIQUES = {
+    "lifeline": "lifeline",
+    "spellblade": "spellblade",
+    "annul": "annul",
+}
+
+
+def unique_passives(description: str) -> tuple[str, ...]:
+    """One-of passives and the Quicksilver active, read from the item text."""
+    found: list[str] = []
+    for name in _PASSIVE.findall(description or ""):
+        key = _NAMED_UNIQUES.get(name.strip().casefold())
+        if key and key not in found:
+            found.append(key)
+    plain = re.sub(r"<[^>]+>", " ", description or "").casefold()
+    if "quicksilver" in plain and "quicksilver" not in found:
+        found.append("quicksilver")
+    return tuple(found)
 
 
 class DragonData:
@@ -110,6 +129,10 @@ def parse_items(payload: dict[str, Any]) -> dict[int, Item]:
             continue
         gold = record.get("gold") or {}
         maps = record.get("maps") or {}
+        try:
+            special_recipe = int(record.get("specialRecipe") or 0)
+        except (TypeError, ValueError):
+            special_recipe = 0
         items[item_id] = Item(
             id=item_id,
             name=str(record.get("name") or f"Item {item_id}"),
@@ -122,6 +145,8 @@ def parse_items(payload: dict[str, Any]) -> dict[int, Item]:
             from_ids=_ints(record.get("from")),
             required_champion=str(record.get("requiredChampion") or ""),
             howling_abyss=bool(maps.get("12")),
+            uniques=unique_passives(str(record.get("description") or "")),
+            special_recipe=special_recipe,
         )
     return items
 

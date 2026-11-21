@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 
-from league_overlay.catalog import DragonData
-from league_overlay.items import frontier_buys, next_purchase, recommend
+from league_overlay.catalog import DragonData, parse_items
+from league_overlay.items import completion_blocked, enemy_build_line, frontier_buys, next_purchase, recommend
 from league_overlay.lcu import ChampSelect, LcuResult, parse_lockfile, parse_session
 from league_overlay.live import LiveResult, match_player
 from league_overlay.model import Champion, Item
@@ -180,6 +181,48 @@ class ItemTests(unittest.TestCase):
         buys = recommend(champ(122, "Darius", "Darius", ["Fighter", "Tank"], 9, 1, 5), [JINX, ZED, LEE, DARIUS, TALON], {1001: 1}, 3000, items)
         self.assertNotIn(3047, {buy.completed_id for buy in buys})
         self.assertTrue(buys)
+
+    def test_last_whisper_upgrade_is_blocked_once_one_is_finished(self) -> None:
+        items = shop(
+            item(1036, "Long Sword", 350),
+            item(3035, "Last Whisper", 1450, 750, from_ids=(1036, 1036)),
+            item(3033, "Mortal Reminder", 3000, 500, from_ids=(3035,)),
+            item(3036, "Lord Dominik's Regards", 3300, 600, from_ids=(3035, 6670)),
+            item(6670, "Noonquiver", 1300),
+        )
+        self.assertTrue(completion_blocked(3036, {3033: 1}, items))
+        self.assertFalse(completion_blocked(3036, {3035: 1}, items))
+        step = next_purchase(3036, {3035: 1}, 2000, items)
+        self.assertIsNotNone(step)
+        assert step is not None
+        self.assertNotEqual(step[0], 3035)
+        self.assertEqual(step[0], 6670)
+
+    def test_zhonya_is_not_treated_as_an_armor_stack(self) -> None:
+        items = shop(
+            item(3157, "Zhonya's Hourglass", 3250, tags=("Armor", "SpellDamage")),
+            item(3143, "Randuin's Omen", 2700, tags=("Health", "Armor")),
+        )
+        self.assertEqual(enemy_build_line((("Ekko", (3157,)),), items), "")
+        self.assertIn("armor on Zac", enemy_build_line((("Zac", (3143,)),), items))
+
+    def test_cached_items_block_a_second_unique(self) -> None:
+        path = ROOT / "cache" / "ddragon" / "item.json"
+        if not path.is_file():
+            self.skipTest("Data Dragon cache is not on this PC")
+        items = parse_items(json.loads(path.read_text(encoding="utf-8")))
+        self.assertTrue(completion_blocked(3036, {3033: 1}, items))
+        self.assertTrue(completion_blocked(6694, {3033: 1}, items))
+        self.assertTrue(completion_blocked(6673, {3156: 1}, items))
+        self.assertTrue(completion_blocked(3047, {3158: 1}, items))
+        self.assertFalse(completion_blocked(3036, {3035: 1}, items))
+        self.assertFalse(completion_blocked(3158, {1001: 1}, items))
+        self.assertTrue(completion_blocked(3040, {3042: 1}, items))
+        self.assertTrue(completion_blocked(3003, {3042: 1}, items))
+        step = next_purchase(3033, {3035: 1}, 5000, items)
+        self.assertIsNotNone(step)
+        assert step is not None
+        self.assertNotEqual(step[0], 3035)
 
 
 class PickTests(unittest.TestCase):

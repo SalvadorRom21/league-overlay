@@ -5,10 +5,11 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from league_overlay.bridge import recommend_bridge, suggest_bridge
+from league_overlay.augments import AugmentBook, resolve_augments
+from league_overlay.bridge import match_detail, recommend_bridge, suggest_bridge
 from league_overlay.catalog import DragonData
-from league_overlay.items import Recommendation, recommend
-from league_overlay.lcu import ChampSelect, LcuResult
+from league_overlay.items import Recommendation, enemy_build_line, recommend
+from league_overlay.lcu import ChampSelect, LcuResult, MatchBoard
 from league_overlay.live import LiveResult, ParsedGame, parse_game
 from league_overlay.modeinfo import ModeInfo, detect_mode
 from league_overlay.model import Champion
@@ -111,7 +112,48 @@ def _detected(live: LiveResult, lcu: LcuResult) -> ModeInfo:
     )
 
 
-def _ingame_panel(live: LiveResult, catalog: DragonData, mode: ModeInfo) -> InGamePanel:
+def _full_inventory(owned: dict[int, int]) -> str:
+    filled = sum(count for count in owned.values() if count > 0)
+    if filled >= 6:
+        return "Inventory is full. This buy replaces an item."
+    return ""
+
+
+def _with_full(detail: str, full: str) -> str:
+    if not full:
+        return detail
+    if not detail:
+        return full
+    return f"{detail}\n{full}"
+
+
+def _resolved_augments(
+    book: AugmentBook | None,
+    game: ParsedGame,
+    board: MatchBoard | None,
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    local_ids = list(game.augment_ids)
+    enemy_ids = list(game.enemy_augment_ids)
+    if board is not None and game.game_id and board.game_id == game.game_id:
+        for aug_id in (board.local_player().augments if board.local_player() else ()):
+            if aug_id not in local_ids:
+                local_ids.append(aug_id)
+        for player in board.enemy_players():
+            for aug_id in player.augments:
+                if aug_id not in enemy_ids:
+                    enemy_ids.append(aug_id)
+    yours, your_text = resolve_augments(book, local_ids, game.augments)
+    enemies, enemy_text = resolve_augments(book, enemy_ids, game.enemy_augments)
+    return yours, your_text, enemies, enemy_text
+
+
+def _ingame_panel(
+    live: LiveResult,
+    catalog: DragonData,
+    mode: ModeInfo,
+    lcu: LcuResult,
+    augments: AugmentBook | None,
+) -> InGamePanel:
     if live.status == "down":
         return InGamePanel(False, "No active game.")
     if live.status != "ok" or not isinstance(live.data, dict):
@@ -141,6 +183,8 @@ def _ingame_panel(live: LiveResult, catalog: DragonData, mode: ModeInfo) -> InGa
             threat,
             items_line,
         )
+    yours, your_text, enemy_names, enemy_text = _resolved_augments(augments, game, lcu.board)
+    full = _full_inventory(game.owned)
     detail = ""
     if mode.bridge:
         early = (game.level > 0 and game.level <= 4) or (game.level <= 0 and 0 < game.seconds < 240)
@@ -152,17 +196,28 @@ def _ingame_panel(live: LiveResult, catalog: DragonData, mode: ModeInfo) -> InGa
             catalog.items,
             mayhem_shop=mode.mayhem_shop,
             early=early,
-            player_augments=game.augments,
-            enemy_augments=game.enemy_augments,
-            augments_exposed=game.augments_exposed,
+            player_augments=yours,
+            enemy_augments=enemy_names,
+            player_augment_text=your_text,
+            enemy_augment_text=enemy_text,
+            enemy_builds=game.enemy_builds,
+            augments_exposed=game.augments_exposed or bool(yours),
             mention_augments=mode.kind in {"mayhem", "aram-unconfirmed"},
         )
         advice = list(result.buys)
         threat = result.threat_line
-        detail = result.detail
+        detail = _with_full(result.detail, full)
         empty = "No fountain buy stands out for this bridge."
     else:
-        advice = recommend(game.champion, game.enemies, game.owned, game.gold, catalog.items)
+        advice = recommend(
+            game.champion,
+            game.enemies,
+            game.owned,
+            game.gold,
+            catalog.items,
+            enemy_builds=game.enemy_builds,
+        )
+        detail = _with_full(enemy_build_line(game.enemy_builds, catalog.items), full)
         empty = "No counter buy stands out for this team."
     if not advice:
         return InGamePanel(
@@ -288,11 +343,12 @@ def _pick_panel(lcu: LcuResult, catalog: DragonData, mode: ModeInfo) -> PickPane
 
 
 _NOTES = {
-    "rift": "Next buys from your champion, gold, and the five enemies.",
-    "mayhem": "ARAM: Mayhem. You shop in the fountain, usually on death. Healing and poke matter more than a Summoner's Rift lane.",
-    "aram": "ARAM. You shop in the fountain, not a side lane. This is bridge advice, not Summoner's Rift.",
+    "rift": "Next buys from your champion, gold, the enemy champions, and the items they are buying.",
+    "mayhem": "ARAM: Mayhem. You shop in the fountain, usually on death. Buys follow their champions, the items they are buying, and augments once the client records them.",
+    "aram": "ARAM. You shop in the fountain, not a side lane. This is bridge advice, not Summoner's Rift. Buys follow their champions and the items they are buying.",
     "aram-unconfirmed": "Could not tell ARAM: Mayhem from normal ARAM. Showing ARAM advice, not Summoner's Rift.",
 }
+_POSTGAME_NOTE = "Augments the client saved for this match. The buy follows their champions and the items they finished with."
 _SELECT_NOTES = {
     "rift": "A pick from the champions you can actually lock.",
     "mayhem": "ARAM: Mayhem. A bridge pick from the champions you can lock, including a bench swap or a reroll.",
@@ -301,12 +357,112 @@ _SELECT_NOTES = {
 }
 
 
-def build_view(live: LiveResult, lcu: LcuResult, catalog: DragonData) -> tuple[OverlayView, float]:
+def _saved_panel(
+    lcu: LcuResult,
+    catalog: DragonData,
+    mode: ModeInfo,
+    augments: AugmentBook | None,
+) -> InGamePanel | None:
+    board = lcu.board
+    if board is None or not any(player.augments for player in board.players):
+        return None
+    local = board.local_player()
+    yours, your_text = resolve_augments(augments, local.augments if local else (), ())
+    enemy_ids: list[int] = []
+    for player in board.enemy_players():
+        enemy_ids.extend(player.augments)
+    enemy_names, enemy_text = resolve_augments(augments, enemy_ids, ())
+    you: Champion | None = None
+    your_label = local.champion_name if local and local.champion_name else "Your champion"
+    owned: dict[int, int] = {}
+    if local is not None:
+        if local.champion_name:
+            your_label = local.champion_name
+        you = catalog.champion_by_key(local.champion_id)
+        if you is not None:
+            your_label = you.name
+        for item_id in local.items:
+            owned[item_id] = owned.get(item_id, 0) + 1
+    enemies: list[Champion] = []
+    enemy_labels: list[str] = []
+    builds: list[tuple[str, tuple[int, ...]]] = []
+    for player in board.enemy_players():
+        champ = catalog.champion_by_key(player.champion_id)
+        label = player.champion_name or (champ.name if champ is not None else f"#{player.champion_id}")
+        enemy_labels.append(label)
+        if champ is not None:
+            enemies.append(champ)
+        if player.items:
+            builds.append((label, player.items))
+    enemy_line = "vs " + ", ".join(enemy_labels) if enemy_labels else "No enemies in this match."
+    item_names = []
+    for item_id in owned:
+        meta = catalog.items.get(item_id)
+        item_names.append(meta.name if meta is not None else str(item_id))
+    items_line = "Items: " + ", ".join(item_names) if item_names else "Items: empty"
+    if you is None or not catalog.ready:
+        detail = match_detail(yours, enemy_names, exposed=True, building=enemy_build_line(builds, catalog.items))
+        return InGamePanel(True, "", your_label, enemy_line, "", items_line, detail)
+    if mode.bridge:
+        result = recommend_bridge(
+            you,
+            enemies,
+            owned,
+            0,
+            catalog.items,
+            mayhem_shop=mode.mayhem_shop,
+            player_augments=yours,
+            enemy_augments=enemy_names,
+            player_augment_text=your_text,
+            enemy_augment_text=enemy_text,
+            enemy_builds=builds,
+            augments_exposed=True,
+            mention_augments=True,
+        )
+        return InGamePanel(
+            True,
+            "",
+            your_label,
+            enemy_line,
+            result.threat_line,
+            items_line,
+            result.detail,
+            tuple(_buy_view(rec, index) for index, rec in enumerate(result.buys)),
+        )
+    advice = recommend(you, enemies, owned, 0, catalog.items, enemy_builds=builds)
+    detail = match_detail(
+        yours,
+        enemy_names,
+        exposed=True,
+        building=enemy_build_line(builds, catalog.items),
+    )
+    threat = threat_line(summarize(enemies)) if enemies else ""
+    return InGamePanel(
+        True,
+        "" if advice else "No counter buy stands out for this team.",
+        your_label,
+        enemy_line,
+        threat,
+        items_line,
+        detail,
+        tuple(_buy_view(rec, index) for index, rec in enumerate(advice)),
+    )
+
+
+def build_view(
+    live: LiveResult,
+    lcu: LcuResult,
+    catalog: DragonData,
+    augments: AugmentBook | None = None,
+) -> tuple[OverlayView, float]:
     detected = _detected(live, lcu)
-    ingame = _ingame_panel(live, catalog, detected)
+    ingame = _ingame_panel(live, catalog, detected, lcu, augments)
     picks = _pick_panel(lcu, catalog, detected)
     in_game = live.status == "ok" and ingame.active
     in_select = lcu.status == "champselect"
+    saved = None if in_game or in_select else _saved_panel(lcu, catalog, detected, augments)
+    if saved is not None:
+        ingame = saved
     if in_game:
         mode, headline, note, interval = (
             "ingame",
@@ -319,6 +475,13 @@ def build_view(live: LiveResult, lcu: LcuResult, catalog: DragonData) -> tuple[O
             "champselect",
             f"Champion select · {detected.label}",
             _SELECT_NOTES[detected.kind],
+            ACTIVE_INTERVAL,
+        )
+    elif saved is not None:
+        mode, headline, note, interval = (
+            "postgame",
+            f"Last game · {detected.label}",
+            _POSTGAME_NOTE,
             ACTIVE_INTERVAL,
         )
     elif lcu.status == "open":

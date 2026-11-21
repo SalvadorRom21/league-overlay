@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import unittest
 
+from league_overlay.augments import AugmentBook
 from league_overlay.bridge import recommend_bridge
 from league_overlay.catalog import DragonData
 from league_overlay.items import recommend
-from league_overlay.lcu import ChampSelect, LcuResult, parse_session
+from league_overlay.lcu import ChampSelect, LcuResult, parse_eog, parse_session
 from league_overlay.live import LiveResult
 from league_overlay.modeinfo import detect_mode, queue_id_from_gameflow
 from league_overlay.model import Champion, Item
@@ -26,6 +27,8 @@ def shop_item(
     rift: bool = True,
     abyss: bool = True,
     tags: tuple[str, ...] = (),
+    from_ids: tuple[int, ...] = (),
+    uniques: tuple[str, ...] = (),
 ) -> Item:
     return Item(
         id=item_id,
@@ -36,9 +39,10 @@ def shop_item(
         summoners_rift=rift,
         in_store=True,
         tags=tags,
-        from_ids=(),
+        from_ids=from_ids,
         required_champion="",
         howling_abyss=abyss,
+        uniques=uniques,
     )
 
 
@@ -198,16 +202,18 @@ class ShopTests(unittest.TestCase):
         catalog = DragonData(
             "test",
             [mf, *enemies],
-            {
+                {
                 item.id: item
                 for item in (
-                    shop_item(3033, "Mortal Reminder", 3000),
-                    shop_item(3156, "Maw of Malmortius", 3100),
-                    shop_item(3158, "Ionian Boots of Lucidity", 900, tags=("Boots",)),
-                    shop_item(3036, "Lord Dominik's Regards", 3300),
+                    shop_item(1036, "Long Sword", 350),
+                    shop_item(3035, "Last Whisper", 1450, from_ids=(1036, 1036)),
+                    shop_item(3033, "Mortal Reminder", 3000, from_ids=(3035,)),
+                    shop_item(3156, "Maw of Malmortius", 3100, uniques=("lifeline",)),
+                    shop_item(3158, "Ionian Boots of Lucidity", 900, tags=("Boots",), from_ids=(1001,)),
+                    shop_item(3036, "Lord Dominik's Regards", 3300, from_ids=(3035,)),
                     shop_item(3072, "Bloodthirster", 3400),
                     shop_item(3139, "Mercurial Scimitar", 3200),
-                    shop_item(6673, "Immortal Shieldbow", 3000),
+                    shop_item(6673, "Immortal Shieldbow", 3000, uniques=("lifeline",)),
                     shop_item(3184, "Guardian's Hammer", 950),
                 )
             },
@@ -223,8 +229,9 @@ class ShopTests(unittest.TestCase):
             mention_augments=True,
         )
         names = {buy.completed_name for buy in result.buys}
-        self.assertTrue(result.buys)
-        self.assertTrue(names & {"Lord Dominik's Regards", "Bloodthirster"})
+        self.assertIn("Bloodthirster", names)
+        self.assertNotIn("Lord Dominik's Regards", names)
+        self.assertNotIn("Immortal Shieldbow", names)
         self.assertNotIn("Mortal Reminder", names)
         self.assertNotIn("Maw of Malmortius", names)
         self.assertNotIn("Guardian's Hammer", names)
@@ -309,6 +316,155 @@ class RerollTests(unittest.TestCase):
         self.assertEqual(view.headline, "Champion select · Summoner's Rift")
         self.assertIn("Malphite", view.picks.pick_line)
         self.assertNotIn("Reroll", view.picks.pick_line)
+
+
+class TeamBuildTests(unittest.TestCase):
+    def test_enemy_healing_items_ask_for_grievous(self) -> None:
+        items = dict(bridge_catalog().items)
+        items[3072] = shop_item(3072, "Bloodthirster", 3400, tags=("Damage", "LifeSteal"))
+        bare = recommend_bridge(AHRI, ASSASSINS, {}, 4000, items, mayhem_shop=True)
+        self.assertNotIn("Morellonomicon", {buy.completed_name for buy in bare.buys})
+        fed = recommend_bridge(
+            AHRI,
+            ASSASSINS,
+            {},
+            4000,
+            items,
+            mayhem_shop=True,
+            enemy_builds=(("Zed", (3072,)), ("Talon", (3072,))),
+            mention_augments=True,
+        )
+        self.assertIn("Morellonomicon", {buy.completed_name for buy in fed.buys})
+        self.assertIn("healing on Zed", fed.detail)
+
+    def test_enemy_armor_asks_for_penetration(self) -> None:
+        mf = champ(21, "MissFortune", "Miss Fortune", ["Marksman"], 8, 5, 3)
+        enemies = [
+            champ(134, "Syndra", "Syndra", ["Mage"], 2, 9, 2),
+            champ(61, "Orianna", "Orianna", ["Mage"], 4, 9, 3),
+            champ(268, "Azir", "Azir", ["Mage"], 6, 8, 3),
+        ]
+        catalog = DragonData(
+            "test",
+            [mf, *enemies],
+            {
+                item.id: item
+                for item in (
+                    shop_item(3036, "Lord Dominik's Regards", 3300),
+                    shop_item(3072, "Bloodthirster", 3400),
+                    shop_item(3139, "Mercurial Scimitar", 3200),
+                    shop_item(3110, "Frozen Heart", 2700, tags=("Armor", "Health")),
+                )
+            },
+        )
+        bare = recommend_bridge(mf, enemies, {}, 4000, catalog.items, mayhem_shop=True, limit=4)
+        self.assertNotIn("Lord Dominik's Regards", {buy.completed_name for buy in bare.buys})
+        fed = recommend_bridge(
+            mf,
+            enemies,
+            {},
+            4000,
+            catalog.items,
+            mayhem_shop=True,
+            enemy_builds=tuple((enemy.name, (3110,)) for enemy in enemies),
+            limit=4,
+        )
+        self.assertIn("Lord Dominik's Regards", {buy.completed_name for buy in fed.buys})
+        self.assertIn("armor on Syndra", fed.detail)
+
+    def test_enemy_shield_item_asks_for_serpent(self) -> None:
+        mf = champ(21, "MissFortune", "Miss Fortune", ["Marksman"], 8, 5, 3)
+        zed = champ(238, "Zed", "Zed", ["Assassin"], 9, 1, 2)
+        catalog = DragonData(
+            "test",
+            [mf, zed],
+            {
+                6695: shop_item(6695, "Serpent's Fang", 2600),
+                6673: shop_item(6673, "Immortal Shieldbow", 3000, uniques=("lifeline",)),
+                3072: shop_item(3072, "Bloodthirster", 3400),
+            },
+        )
+        bare = recommend_bridge(mf, [zed], {}, 4000, catalog.items, mayhem_shop=False)
+        self.assertNotIn("Serpent's Fang", {buy.completed_name for buy in bare.buys})
+        fed = recommend_bridge(
+            mf,
+            [zed],
+            {},
+            4000,
+            catalog.items,
+            mayhem_shop=False,
+            enemy_builds=(("Zed", (6673,)),),
+        )
+        self.assertIn("Serpent's Fang", {buy.completed_name for buy in fed.buys})
+
+    def test_saved_match_shows_augment_names(self) -> None:
+        board = parse_eog(
+            {
+                "gameId": 5,
+                "queueId": 2400,
+                "teams": [
+                    {
+                        "teamId": 100,
+                        "players": [
+                            {
+                                "championId": 90,
+                                "championName": "Malzahar",
+                                "isLocalPlayer": True,
+                                "items": [2503, 0, 220013],
+                                "stats": {"PLAYER_AUGMENT_1": 3086, "PLAYER_AUGMENT_2": 1011, "PLAYER_AUGMENT_3": 0},
+                            }
+                        ],
+                    },
+                    {
+                        "teamId": 200,
+                        "players": [
+                            {
+                                "championId": 10,
+                                "championName": "Kayle",
+                                "isLocalPlayer": False,
+                                "items": [3072],
+                                "stats": {"PLAYER_AUGMENT_1": 1047},
+                            }
+                        ],
+                    },
+                ],
+            }
+        )
+        self.assertIsNotNone(board)
+        assert board is not None
+        local = board.local_player()
+        self.assertIsNotNone(local)
+        assert local is not None
+        self.assertEqual(local.augments, (3086, 1011))
+        self.assertIn(2503, local.items)
+        self.assertNotIn(220013, local.items)
+        book = AugmentBook.from_pairs(
+            {
+                3086: ("BEES!", "Your attacks spawn bees."),
+                1011: ("Can't Touch This", "You gain a shield."),
+                1047: ("It's Critical", "Gain critical strike chance."),
+            }
+        )
+        view, _interval = build_view(
+            LiveResult.down(),
+            LcuResult("open", queue_id=2400, board=board),
+            bridge_catalog(),
+            book,
+        )
+        self.assertEqual(view.headline, "Last game · ARAM: Mayhem")
+        self.assertEqual(view.mode, "postgame")
+        self.assertIn("BEES!", view.ingame.detail_line)
+        self.assertIn("Can't Touch This", view.ingame.detail_line)
+        self.assertIn("It's Critical", view.ingame.detail_line)
+        self.assertIn("Malzahar", view.ingame.champion_line)
+
+    def test_full_inventory_says_the_buy_replaces_an_item(self) -> None:
+        payload = game("KIWI")
+        payload["allPlayers"][0]["items"] = [
+            {"itemID": item_id, "count": 1} for item_id in (3031, 3036, 3072, 3042, 3094, 3158)
+        ]
+        view, _interval = build_view(LiveResult("ok", payload), LcuResult.down(), bridge_catalog())
+        self.assertIn("Inventory is full", view.ingame.detail_line)
 
 
 if __name__ == "__main__":

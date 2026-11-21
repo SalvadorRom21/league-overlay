@@ -33,12 +33,19 @@ def run_once(debug: bool) -> int:
 
     poller = Poller(debug=debug)
     poller.catalog.ensure()
+    poller.augments.ensure()
     view = poller.tick()
     print(view.headline, flush=True)
     if view.ingame.message:
         print(f"In game: {view.ingame.message}", flush=True)
     elif view.ingame.champion_line:
         print(f"In game: {view.ingame.champion_line}", flush=True)
+    if view.ingame.enemy_line:
+        print(view.ingame.enemy_line, flush=True)
+    if view.ingame.detail_line:
+        print(view.ingame.detail_line, flush=True)
+    for buy in view.ingame.buys:
+        print(f"{buy.title}: {buy.item_line} {buy.into_line}", flush=True)
     if view.picks.message:
         print(f"Champion select: {view.picks.message}", flush=True)
     elif view.picks.pick_line:

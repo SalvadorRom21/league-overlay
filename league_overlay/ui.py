@@ -310,13 +310,14 @@ class OverlayWindow:
     def _paint_mode(self, mode: str) -> None:
         styles = {
             "ingame": ("IN GAME", "#04210f", GREEN),
+            "postgame": ("AUGMENTS", "#04210f", GREEN),
             "champselect": ("SELECT", "#2a2412", GOLD),
             "idle": ("OPEN", "#2a303c", TEXT),
             "waiting": ("WAITING", "#2a303c", MUTED),
         }
         text, bg, fg = styles.get(mode, styles["waiting"])
         self.mode_pill.configure(text=text, bg=bg, fg=fg)
-        active_game = mode == "ingame"
+        active_game = mode in {"ingame", "postgame"}
         active_pick = mode == "champselect"
         self._border(self.game_card, active_game)
         self._border(self.pick_card, active_pick)
