@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 
+from league_overlay.bridge import recommend_bridge
 from league_overlay.catalog import DragonData
 from league_overlay.items import recommend
 from league_overlay.lcu import ChampSelect, LcuResult, parse_session
@@ -184,6 +185,49 @@ class ShopTests(unittest.TestCase):
         self.assertNotIn("Morellonomicon", buy_text(view))
         self.assertIn("Grievous Wounds", view.ingame.detail_line)
         self.assertIn("Skipped another grievous-wounds item", view.ingame.detail_line)
+
+    def test_marksman_still_gets_a_buy_after_grievous_and_magic_resist(self) -> None:
+        mf = champ(21, "MissFortune", "Miss Fortune", ["Marksman"], 8, 5, 3)
+        enemies = [
+            champ(12, "Alistar", "Alistar", ["Tank", "Support"], 6, 5, 9),
+            champ(90, "Malzahar", "Malzahar", ["Mage"], 2, 9, 2),
+            champ(42, "Corki", "Corki", ["Marksman"], 8, 6, 3),
+            champ(122, "Darius", "Darius", ["Fighter", "Tank"], 9, 1, 5),
+            champ(29, "Twitch", "Twitch", ["Marksman", "Assassin"], 9, 2, 2),
+        ]
+        catalog = DragonData(
+            "test",
+            [mf, *enemies],
+            {
+                item.id: item
+                for item in (
+                    shop_item(3033, "Mortal Reminder", 3000),
+                    shop_item(3156, "Maw of Malmortius", 3100),
+                    shop_item(3158, "Ionian Boots of Lucidity", 900, tags=("Boots",)),
+                    shop_item(3036, "Lord Dominik's Regards", 3300),
+                    shop_item(3072, "Bloodthirster", 3400),
+                    shop_item(3139, "Mercurial Scimitar", 3200),
+                    shop_item(6673, "Immortal Shieldbow", 3000),
+                    shop_item(3184, "Guardian's Hammer", 950),
+                )
+            },
+        )
+        result = recommend_bridge(
+            mf,
+            enemies,
+            {3033: 1, 3156: 1, 3158: 1},
+            3700,
+            catalog.items,
+            mayhem_shop=True,
+            early=False,
+            mention_augments=True,
+        )
+        names = {buy.completed_name for buy in result.buys}
+        self.assertTrue(result.buys)
+        self.assertTrue(names & {"Lord Dominik's Regards", "Bloodthirster"})
+        self.assertNotIn("Mortal Reminder", names)
+        self.assertNotIn("Maw of Malmortius", names)
+        self.assertNotIn("Guardian's Hammer", names)
 
     def test_attack_damage_inventory_does_not_buy_an_ability_power_legendary(self) -> None:
         kennen = champ(85, "Kennen", "Kennen", ["Mage", "Marksman"], 6, 7, 4)
