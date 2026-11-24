@@ -205,6 +205,7 @@ class Kit:
     damage: str
     pattern: str
     role: str
+    focus: str = ""
 
 
 def champion_kit(champ: Champion) -> Kit:
@@ -227,11 +228,55 @@ def champion_kit(champ: Champion) -> Kit:
         pattern = "spell"
     else:
         pattern = "both"
-    return Kit(profile, kind, pattern, profile)
+    return Kit(profile, kind, pattern, profile, FOCUS_OVERRIDE.get(champ.id, ""))
+
+
+# Kits that do not spend gold the way their role usually does.
+# Jhin's attack speed is locked, and the bonus becomes a little attack damage.
+STAT_PREFS: dict[str, dict[str, float]] = {
+    "Jhin": {"crit": 1.8, "ad": 1.1, "lethality": 1.35, "attack_speed": 0.4, "lifesteal": 0.65},
+    "Graves": {"crit": 1.25, "ad": 1.15, "lethality": 1.3, "attack_speed": 0.45},
+    "Ezreal": {"crit": 0.45, "attack_speed": 0.5, "ad": 1.15, "lethality": 0.8},
+    "Kalista": {"attack_speed": 1.4, "crit": 0.75, "lethality": 0.55},
+}
+
+FOCUS_OVERRIDE = {
+    "Jhin": "attack damage and crit. Bonus attack speed becomes a little attack damage",
+    "Graves": "attack damage and crit between reloads",
+    "Ezreal": "attack damage and ability haste on spell casts",
+    "Kalista": "attack speed on spears",
+}
+
+
+def champion_factor(champ_id: str, tags: set[str]) -> float:
+    """Raise items his kit scales with, and sink items that stat does not use."""
+    prefs = STAT_PREFS.get(champ_id)
+    if not prefs:
+        return 1.0
+    factor = 1.0
+    crit = "CriticalStrike" in tags
+    speed = "AttackSpeed" in tags and "Boots" not in tags
+    lifesteal = "LifeSteal" in tags or "SpellVamp" in tags
+    pen = "ArmorPenetration" in tags and "Boots" not in tags
+    if crit:
+        factor *= prefs.get("crit", 1.0)
+    if speed:
+        factor *= prefs.get("attack_speed", 1.0)
+    if lifesteal:
+        factor *= prefs.get("lifesteal", 1.0)
+    if pen:
+        factor *= prefs.get("lethality", 1.0)
+    if "Damage" in tags and not crit and not speed and not lifesteal and not pen:
+        factor *= prefs.get("ad", 1.0)
+    if "SpellDamage" in tags:
+        factor *= prefs.get("ap", 1.0)
+    return factor
 
 
 def kit_focus(kit: Kit) -> str:
     """Short line for the plan: the stats this champion is buying."""
+    if kit.focus:
+        return kit.focus
     if kit.role == "Enchanter":
         return "enchanter shields and heals"
     if kit.damage == "tank":

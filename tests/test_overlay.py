@@ -6,6 +6,7 @@ import json
 import unittest
 from pathlib import Path
 
+from league_overlay.bridge import recommend_bridge
 from league_overlay.catalog import DragonData, parse_items
 from league_overlay.items import (
     advise,
@@ -40,6 +41,8 @@ def item(
     base: int | None = None,
     from_ids: tuple[int, ...] = (),
     tags: tuple[str, ...] = (),
+    *,
+    abyss: bool = False,
 ) -> Item:
     return Item(
         id=item_id,
@@ -52,6 +55,7 @@ def item(
         tags=tags,
         from_ids=from_ids,
         required_champion="",
+        howling_abyss=abyss,
     )
 
 
@@ -210,6 +214,38 @@ class ItemTests(unittest.TestCase):
         self.assertNotIn("Liandry's Torment", result.plan)
         self.assertIn("Infinity Edge", result.plan)
         self.assertEqual(result.focus, "attack damage on auto attacks")
+
+    def test_jhin_scales_with_crit_damage_not_attack_speed(self) -> None:
+        jhin = champ(202, "Jhin", "Jhin", ["Marksman"], 9, 2, 2)
+        items = shop(
+            item(3031, "Infinity Edge", 3500, tags=("Damage", "CriticalStrike"), abyss=True),
+            item(6676, "The Collector", 3000, tags=("Damage", "CriticalStrike", "ArmorPenetration"), abyss=True),
+            item(3094, "Rapid Firecannon", 2650, tags=("CriticalStrike", "AttackSpeed"), abyss=True),
+            item(3046, "Phantom Dancer", 2650, tags=("CriticalStrike", "AttackSpeed"), abyss=True),
+            item(6672, "Kraken Slayer", 3000, tags=("Damage", "AttackSpeed"), abyss=True),
+            item(3072, "Bloodthirster", 3400, tags=("Damage", "LifeSteal"), abyss=True),
+            item(3156, "Maw of Malmortius", 3100, tags=("SpellBlock", "Damage", "LifeSteal"), abyss=True),
+            item(3139, "Mercurial Scimitar", 3200, tags=("SpellBlock", "Damage", "LifeSteal"), abyss=True),
+            item(3033, "Mortal Reminder", 3000, tags=("Damage", "ArmorPenetration"), abyss=True),
+            item(3047, "Plated Steelcaps", 1200, tags=("Armor", "Boots"), abyss=True),
+            item(3111, "Mercury's Treads", 1250, tags=("Boots", "SpellBlock"), abyss=True),
+        )
+        enemies = [SYNDRA, ORIANNA, MALPHITE, SORAKA, ZED]
+        owned = {3033: 1}
+        result = advise(jhin, enemies, owned, 1600, items)
+        self.assertIn("Infinity Edge", result.plan)
+        self.assertIn("The Collector", result.plan)
+        self.assertNotIn("Phantom Dancer", result.plan)
+        self.assertNotIn("Kraken Slayer", result.plan)
+        resist = [name for name in result.plan if name in {"Maw of Malmortius", "Mercurial Scimitar"}]
+        self.assertLessEqual(len(resist), 1)
+        self.assertIn(result.buys[0].completed_name, {"Infinity Edge", "The Collector"})
+        self.assertIn("crit", result.focus)
+        bridge = recommend_bridge(jhin, enemies, owned, 1600, items, mayhem_shop=True)
+        self.assertIn("Infinity Edge", bridge.plan)
+        self.assertIn("The Collector", bridge.plan)
+        self.assertNotIn("Phantom Dancer", bridge.plan)
+        self.assertIn(bridge.buys[0].completed_name, {"Infinity Edge", "The Collector"})
 
     def test_tank_plan_stays_defensive_against_squishy_mages(self) -> None:
         items = shop(

@@ -21,7 +21,7 @@ The in-game panel shows the rounded totals: `AD 3 · AP 1 · Heal 1`.
 
 Your champion is placed in one shop profile: Tank, Fighter, Assassin, Marksman, Mage, Battlemage, or Support. The profile comes from Data Dragon tags, with overrides where the tags would buy the wrong stats (Fizz shops as a mage, Nilah as a marksman, Jayce as a fighter, K'Sante as a tank).
 
-The six-item plan starts from that champion. Damage is attack damage, ability power, or tank. Pattern is auto attacks, spells, or both. A mage is not handed attack-damage items, a marksman is not handed ability-power items, and a tank's slots stay on health and resists. An enchanter buys heal and shield items. At least two of the six slots stay on that champion's own finished items. The other slots are the armor, magic resist, grievous, or penetration version that same champion can use against the live enemies.
+The six-item plan starts from that champion. Damage is attack damage, ability power, or tank. Pattern is auto attacks, spells, or both. A mage is not handed attack-damage items, a marksman is not handed ability-power items, and a tank's slots stay on health and resists. An enchanter buys heal and shield items. A few kits do not use the usual stat for that role: Jhin's attack speed is locked and turns into a little attack damage, so his slots stay on critical strike and attack damage. At least three of the six slots stay on the finished items that kit scales with. The other slots are the armor, magic resist, grievous, or penetration version that same champion can use against the live enemies. One magic-resist item is enough. A second one does not replace a damage item his kit scales with.
 
 ## What it tells you to buy
 

@@ -339,7 +339,8 @@ class TeamBuildTests(unittest.TestCase):
             enemy_builds=(("Zed", (3072,)), ("Talon", (3072,))),
             mention_augments=True,
         )
-        self.assertIn("Morellonomicon", {buy.completed_name for buy in fed.buys})
+        self.assertIn("Morellonomicon", fed.plan)
+        self.assertNotIn("Morellonomicon", bare.plan)
         self.assertIn("healing on Zed", fed.detail)
 
     def test_enemy_armor_asks_for_penetration(self) -> None:

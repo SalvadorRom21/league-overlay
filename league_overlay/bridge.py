@@ -32,6 +32,7 @@ from league_overlay.threats import (
     HEAL_CHAMPS,
     build_profile,
     champion_kit,
+    champion_factor,
     damage_type,
     damage_weight,
     kit_focus,
@@ -209,6 +210,7 @@ RULES: tuple[BridgeRule, ...] = (
     BridgeRule(4646, frozenset({"Mage", "Battlemage"}), (), "core", "Ability power burst for a mage", base=1.5, job="core"),
     BridgeRule(4633, frozenset({"Battlemage"}), (), "core", "Ability power and health for a battlemage", base=1.7, job="core"),
     BridgeRule(3031, frozenset({"Marksman", "Fighter"}), (), "crit", "Critical strike for auto attacks", base=1.85, job="core"),
+    BridgeRule(6676, frozenset({"Marksman"}), (), "core", "Critical strike and an execute for a marksman", base=1.45, job="core"),
     BridgeRule(3094, frozenset({"Marksman", "Fighter"}), (("attack_speed", 0.35),), "zeal", "Attack speed for auto attacks", base=1.6, job="core"),
     BridgeRule(3046, frozenset({"Marksman", "Fighter"}), (("attack_speed", 0.3),), "dancer", "A second attack-speed item for auto attacks", base=1.45, job="core"),
     BridgeRule(3072, frozenset({"Marksman", "Fighter"}), (("poke", 0.85),), "lifesteal", "Lifesteal between health relics. You do not recall to heal", base=1.55, job="core"),
@@ -483,6 +485,7 @@ def recommend_bridge(
         if not owned_this and completion_blocked(rule.item_id, owned, items, ignore):
             continue
         score = rule.base + sum(threats.value(tag) * weight for tag, weight in rule.weights)
+        score *= champion_factor(champion.id, set(meta.tags))
         if rule.kind == "shields":
             score += 2.4
         if rule.kind == "boots":

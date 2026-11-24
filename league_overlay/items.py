@@ -13,15 +13,15 @@ from collections import Counter
 from dataclasses import dataclass, replace
 
 from league_overlay.model import Champion, Item
-from league_overlay.threats import HEAL_CHAMPS, Kit, Threats, build_profile, champion_kit, kit_focus, summarize
+from league_overlay.threats import HEAL_CHAMPS, Kit, Threats, build_profile, champion_factor, champion_kit, kit_focus, summarize
 
 MIN_SCORE = 1.6
 # The last slots of a six-item plan can sit under the counter cutoff.
 # They still have to score, so a component with no finished item never fills a slot.
 PLAN_FLOOR = 0.55
 PLAN_SLOTS = 6
-# Slots held for the champion's own items. The rest answer the enemy team.
-CORE_SLOTS = 2
+# Slots held for items his kit actually scales. The rest answer the enemy team.
+CORE_SLOTS = 3
 
 GRIEVOUS_IDS = {3075, 3033, 6609, 3165}
 # Owning a component locks the shop path onto the item that builds from it.
@@ -216,6 +216,7 @@ RULES: tuple[ItemRule, ...] = (
     ItemRule(4646, frozenset({"Mage", "Battlemage"}), (), "core", "Ability power burst for a mage", 1.5, "core"),
     ItemRule(4633, frozenset({"Battlemage"}), (), "core", "Ability power and health for a battlemage", 1.7, "core"),
     ItemRule(3031, frozenset({"Marksman", "Fighter"}), (), "crit", "Critical strike for auto attacks", 1.85, "core"),
+    ItemRule(6676, frozenset({"Marksman"}), (), "core", "Critical strike and an execute for a marksman", 1.45, "core"),
     ItemRule(3094, frozenset({"Marksman", "Fighter"}), (("attack_speed", 0.35),), "zeal", "Attack speed for auto attacks", 1.6, "core"),
     ItemRule(3046, frozenset({"Marksman", "Fighter"}), (("attack_speed", 0.3),), "dancer", "A second attack-speed item for auto attacks", 1.45, "core"),
     ItemRule(3072, frozenset({"Marksman", "Fighter"}), (), "core", "Attack damage and lifesteal for auto attacks", 1.55, "core"),
@@ -1046,6 +1047,26 @@ def _is_core(row: ScoredBuy) -> bool:
     return getattr(row.rule, "job", "answer") == "core"
 
 
+def _stacked_resist(row: ScoredBuy, chosen: list[ScoredBuy], items: dict[int, Item]) -> bool:
+    """A second attack-damage magic-resist item crowds out the damage his kit scales with."""
+    if _is_core(row):
+        return False
+    meta = items.get(row.item_id)
+    if meta is None or "Boots" in meta.tags:
+        return False
+    if "SpellBlock" not in meta.tags or "Damage" not in meta.tags:
+        return False
+    for other in chosen:
+        if _is_core(other):
+            continue
+        other_meta = items.get(other.item_id)
+        if other_meta is None or "Boots" in other_meta.tags:
+            continue
+        if "SpellBlock" in other_meta.tags and "Damage" in other_meta.tags:
+            return True
+    return False
+
+
 def _legal_boots(scored: list[ScoredBuy], owned: dict[int, int], items: dict[int, Item]) -> list[ScoredBuy]:
     rows: list[ScoredBuy] = []
     for row in scored:
@@ -1096,6 +1117,8 @@ def select_plan(
             return False
         if not same_kind and any(other.kind == row.kind for other in chosen):
             return False
+        if _stacked_resist(row, chosen, items):
+            return False
         return True
 
     ordered = sorted(scored, key=lambda row: (-row.score, row.item_id))
@@ -1143,7 +1166,11 @@ def _order_buys(
     started = [row for row in unfinished if _in_progress(row.item_id, owned, items)]
     started.sort(key=lambda row: (-row.score, row.item_id))
     waiting = [row for row in unfinished if row.item_id not in {item.item_id for item in started}]
-    waiting.sort(key=lambda row: (-row.score, row.item_id))
+    cores = [row for row in waiting if _is_core(row)]
+    rest = [row for row in waiting if not _is_core(row)]
+    cores.sort(key=lambda row: (-row.score, row.item_id))
+    rest.sort(key=lambda row: (-row.score, row.item_id))
+    waiting = cores + rest
     picked: list[ScoredBuy] = list(started)
     seen = {row.kind for row in picked}
     deferred: list[ScoredBuy] = []
@@ -1289,6 +1316,7 @@ def advise(
         if not owned_this and completion_blocked(rule.item_id, owned, items, ignore):
             continue
         score = rule.base + sum(threats.value(tag) * weight for tag, weight in rule.weights)
+        score *= champion_factor(champion.id, set(meta.tags))
         if rule.item_id == 3065 and champion.id in HEAL_CHAMPS and threats.ap >= 1:
             score += 1.8
         floor = 0.0 if rule.kind == "boots" else PLAN_FLOOR
