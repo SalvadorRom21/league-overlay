@@ -36,8 +36,8 @@ The window starts in the top-right corner. Drag the title once interaction is on
 | --- | --- |
 | **Waiting for League** | League is not running here, or the local APIs are closed. |
 | **League is open** | The client is up. Waiting for champion select or a game. |
-| **In game · Summoner's Rift** | A six-item plan for this team. The next buy fills the open slot, or names a sell when all six are full. |
-| **In game · ARAM: Mayhem** | Same six-slot plan from the bridge shop. Augment names are read off the League window when the cards are on screen. |
+| **In game · Summoner's Rift** | A six-item plan for this champion, then this team. The next buy fills the open slot, or names a sell when all six are full. |
+| **In game · ARAM: Mayhem** | Same six-slot plan from the bridge shop, still on items that champion can use. Augment names are read off the League window when the cards are on screen. |
 | **Last game · ARAM: Mayhem** | Augment names from the match that just ended, plus the buy those builds pointed at. |
 | **In game · ARAM** | Same bridge shop, without Mayhem-only items. If the client cannot separate Mayhem from ARAM, the note says so. |
 | **Champion select · Summoner's Rift** | A suggested pick from the champions you can lock. |

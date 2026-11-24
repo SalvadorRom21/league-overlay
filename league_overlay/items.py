@@ -13,13 +13,15 @@ from collections import Counter
 from dataclasses import dataclass, replace
 
 from league_overlay.model import Champion, Item
-from league_overlay.threats import HEAL_CHAMPS, Threats, build_profile, summarize
+from league_overlay.threats import HEAL_CHAMPS, Kit, Threats, build_profile, champion_kit, kit_focus, summarize
 
 MIN_SCORE = 1.6
 # The last slots of a six-item plan can sit under the counter cutoff.
 # They still have to score, so a component with no finished item never fills a slot.
 PLAN_FLOOR = 0.55
 PLAN_SLOTS = 6
+# Slots held for the champion's own items. The rest answer the enemy team.
+CORE_SLOTS = 2
 
 GRIEVOUS_IDS = {3075, 3033, 6609, 3165}
 # Owning a component locks the shop path onto the item that builds from it.
@@ -61,11 +63,15 @@ class ItemRule:
     kind: str
     summary: str
     base: float = 0.0
+    job: str = "answer"
 
 
 RULES: tuple[ItemRule, ...] = (
-    ItemRule(3047, ALL, (("ad", 1.35), ("attack_speed", 1.1)), "boots", "Armor boots"),
-    ItemRule(3111, ALL, (("ap", 1.35), ("burst", 0.55)), "boots", "Magic resist boots and tenacity"),
+    ItemRule(3047, ALL, (("ad", 1.35), ("attack_speed", 1.1)), "boots", "Armor boots", 0.15),
+    ItemRule(3111, ALL, (("ap", 1.35), ("burst", 0.55)), "boots", "Magic resist boots and tenacity", 0.15),
+    ItemRule(3020, AP, (), "boots", "Magic penetration boots for spells", 1.6),
+    ItemRule(3006, frozenset({"Marksman", "Fighter"}), (("attack_speed", 0.2),), "boots", "Attack speed boots for auto attacks", 1.6),
+    ItemRule(3158, frozenset({"Assassin", "Support"}), (), "boots", "Ability haste boots for spells", 1.5),
     ItemRule(
         3075,
         frozenset({"Tank", "Fighter", "Support"}),
@@ -110,7 +116,7 @@ RULES: tuple[ItemRule, ...] = (
         "armor",
         "Armor that delays physical damage",
     ),
-    ItemRule(3068, frozenset({"Tank"}), (("ad", 1.05),), "armor", "Armor and a burn aura"),
+    ItemRule(3068, frozenset({"Tank"}), (("ad", 1.05),), "armor", "Armor and a burn aura for a tank", 1.15, "core"),
     ItemRule(6662, frozenset({"Tank", "Fighter"}), (("ad", 1.05),), "armor", "Armor and a slow field"),
     ItemRule(2502, frozenset({"Tank"}), (("ad", 1.0),), "armor", "Armor and health"),
     ItemRule(
@@ -129,7 +135,7 @@ RULES: tuple[ItemRule, ...] = (
         "A magic shield and high magic resist",
     ),
     ItemRule(3065, frozenset({"Tank", "Fighter", "Battlemage"}), (("ap", 1.05),), "mr", "Magic resist that boosts your healing"),
-    ItemRule(6664, frozenset({"Tank"}), (("ap", 1.1),), "mr", "Magic resist and a burn aura"),
+    ItemRule(6664, frozenset({"Tank"}), (("ap", 1.1),), "mr", "Magic resist and a burn aura for a tank", 1.15, "core"),
     ItemRule(8020, frozenset({"Tank", "Battlemage"}), (("ap", 1.15),), "mr", "Magic resist and nearby magic-damage amp"),
     ItemRule(
         3102,
@@ -204,11 +210,30 @@ RULES: tuple[ItemRule, ...] = (
         "A team shield with armor and magic resist",
     ),
     ItemRule(3109, TANKS, (("ad", 1.0), ("burst", 0.35)), "armor", "Armor that links to an ally"),
-    ItemRule(3089, AP, (), "capstone", "Ability power for a slot the threats do not already fill", 0.9),
-    ItemRule(3031, frozenset({"Marksman"}), (), "crit", "Critical strike for a slot the threats do not already fill", 0.9),
-    ItemRule(3094, frozenset({"Marksman"}), (("attack_speed", 0.35),), "zeal", "Attack speed once the fight is answered", 0.75),
-    ItemRule(3046, frozenset({"Marksman"}), (("attack_speed", 0.3),), "dancer", "A second attack-speed item for the last slot", 0.7),
-    ItemRule(3074, AD_BRUISER, (), "cleave", "Damage and healing for a fighter's last slot", 0.8),
+    ItemRule(3089, AP, (), "capstone", "Ability power for spells", 1.85, "core"),
+    ItemRule(6655, frozenset({"Mage", "Battlemage"}), (("burst", 0.35),), "poke", "Ability power that procs on spells", 1.75, "core"),
+    ItemRule(4645, AP, (), "core", "Ability power and magic penetration for spells", 1.6, "core"),
+    ItemRule(4646, frozenset({"Mage", "Battlemage"}), (), "core", "Ability power burst for a mage", 1.5, "core"),
+    ItemRule(4633, frozenset({"Battlemage"}), (), "core", "Ability power and health for a battlemage", 1.7, "core"),
+    ItemRule(3031, frozenset({"Marksman", "Fighter"}), (), "crit", "Critical strike for auto attacks", 1.85, "core"),
+    ItemRule(3094, frozenset({"Marksman", "Fighter"}), (("attack_speed", 0.35),), "zeal", "Attack speed for auto attacks", 1.6, "core"),
+    ItemRule(3046, frozenset({"Marksman", "Fighter"}), (("attack_speed", 0.3),), "dancer", "A second attack-speed item for auto attacks", 1.45, "core"),
+    ItemRule(3072, frozenset({"Marksman", "Fighter"}), (), "core", "Attack damage and lifesteal for auto attacks", 1.55, "core"),
+    ItemRule(6672, frozenset({"Marksman", "Fighter"}), (("attack_speed", 0.25),), "core", "Attack damage and attack speed for auto attacks", 1.5, "core"),
+    ItemRule(3142, frozenset({"Assassin"}), (), "core", "Lethality for an assassin's abilities", 1.7, "core"),
+    ItemRule(6692, frozenset({"Assassin", "Fighter"}), (), "core", "Attack damage for short trades", 1.6, "core"),
+    ItemRule(6698, frozenset({"Assassin"}), (), "core", "Lethality and ability haste for abilities", 1.55, "core"),
+    ItemRule(3078, frozenset({"Fighter"}), (("attack_speed", 0.2),), "core", "Attack damage, attack speed, and ability haste for a fighter", 1.65, "core"),
+    ItemRule(6631, frozenset({"Fighter"}), (), "core", "Attack damage and a slow for a fighter", 1.5, "core"),
+    ItemRule(3161, frozenset({"Fighter", "Assassin"}), (), "core", "Ability haste and attack damage", 1.45, "core"),
+    ItemRule(3074, AD_BRUISER, (), "cleave", "Damage and healing for a fighter", 1.6, "core"),
+    ItemRule(3083, frozenset({"Tank"}), (), "sustain", "Health for a tank", 1.2, "core"),
+    ItemRule(6617, frozenset({"Support"}), (), "core", "Healing for an enchanter", 1.8, "core"),
+    ItemRule(3107, frozenset({"Support"}), (), "core", "A team heal for an enchanter", 1.6, "core"),
+    ItemRule(6616, frozenset({"Support"}), (), "core", "Ability power for an enchanter and an ally", 1.5, "core"),
+    ItemRule(2065, frozenset({"Support"}), (), "core", "A movespeed active for an enchanter", 1.45, "core"),
+    ItemRule(3504, frozenset({"Support"}), (), "core", "Attack speed for the ally an enchanter is shielding", 1.4, "core"),
+    ItemRule(3222, frozenset({"Support"}), (), "core", "A cleanse for an enchanter", 1.35, "core"),
 )
 
 
@@ -371,11 +396,17 @@ def unique_keys(item_id: int, items: dict[int, Item]) -> set[str]:
     return keys
 
 
-def completion_blocked(completed_id: int, owned: dict[int, int], items: dict[int, Item]) -> bool:
+def completion_blocked(
+    completed_id: int,
+    owned: dict[int, int],
+    items: dict[int, Item],
+    ignore: set[int] | None = None,
+) -> bool:
     """True when the completed item is owned or a one-of rule already used its component.
 
     A loose component of this same item does not block it. That component is
-    progress, and the next buy is whatever piece is still missing.
+    progress, and the next buy is whatever piece is still missing. `ignore`
+    skips a finished pair that this buy is replacing.
     """
     if owned.get(completed_id, 0) > 0:
         return True
@@ -383,12 +414,94 @@ def completion_blocked(completed_id: int, owned: dict[int, int], items: dict[int
     if not keys:
         return False
     parts = component_ids(completed_id, items)
+    skipped = ignore or set()
     for owned_id, count in owned.items():
-        if count <= 0 or owned_id in parts:
+        if count <= 0 or owned_id in parts or owned_id in skipped:
             continue
         if unique_keys(owned_id, items) & keys:
             return True
     return False
+
+
+# Attack-damage items that only an auto attacker should build.
+_AUTO_DAMAGE = {3031, 3094, 3046, 3072, 6672, 6673, 3085}
+# Finished items an enchanter can actually use. Damage legendaries are not on this list.
+_ENCHANTER_ITEMS = {6617, 3222, 3107, 3504, 6616, 2065, 3190, 3157, 3102, 3165, 124011}
+
+
+def _boots_fit(tags: set[str], kit: Kit) -> bool:
+    sorcs = "MagicPenetration" in tags
+    zerkers = "AttackSpeed" in tags
+    defensive = "Armor" in tags or "SpellBlock" in tags
+    ionian = "CooldownReduction" in tags
+    if kit.damage == "tank":
+        return defensive
+    if kit.role == "Enchanter":
+        return defensive or ionian
+    if kit.damage == "ap":
+        if kit.pattern == "auto":
+            return sorcs or zerkers or defensive
+        return sorcs or defensive or ionian
+    if kit.pattern == "spell":
+        return defensive or ionian
+    if kit.pattern == "auto":
+        return zerkers or defensive
+    return zerkers or defensive or ionian
+
+
+def item_fits_kit(meta: Item, kind: str, kit: Kit) -> bool:
+    """True when this finished item belongs on this champion, not only on the enemy team."""
+    tags = set(meta.tags)
+    boots = "Boots" in tags or kind == "boots"
+    if boots:
+        return _boots_fit(tags, kit)
+    if kit.role == "Enchanter":
+        return meta.id in _ENCHANTER_ITEMS
+    if meta.id == 3039 and kit.damage == "tank":
+        return True
+    ad_item = ("Damage" in tags or "CriticalStrike" in tags or "ArmorPenetration" in tags) and "SpellDamage" not in tags
+    ap_item = "SpellDamage" in tags or ("MagicPenetration" in tags and not boots)
+    if kit.damage == "tank":
+        if kind in {"crit", "zeal", "dancer", "cleave", "capstone"}:
+            return False
+        if "CriticalStrike" in tags and "Health" not in tags:
+            return False
+        if ap_item and "Health" not in tags and "Armor" not in tags and "SpellBlock" not in tags:
+            return False
+        if ad_item and "Health" not in tags and "Armor" not in tags and "SpellBlock" not in tags:
+            return False
+        return True
+    if meta.id in _AUTO_DAMAGE:
+        return kit.damage == "ad" and (kit.role == "Marksman" or kit.pattern == "auto")
+    if kit.damage == "ap":
+        if ad_item or ("CriticalStrike" in tags and "SpellDamage" not in tags):
+            return False
+        if "AttackSpeed" in tags and "SpellDamage" not in tags:
+            return False
+        if not ap_item and tags & {"Armor", "SpellBlock", "Health"}:
+            return False
+        return True
+    if ap_item and "Damage" not in tags:
+        return False
+    if kind == "capstone":
+        return False
+    if kit.role == "Marksman" and not ad_item and "AttackSpeed" not in tags and "ArmorPenetration" not in tags:
+        if tags & {"Armor", "SpellBlock", "Health"}:
+            return False
+    return True
+
+
+def _other_finished_boots(owned: dict[int, int], items: dict[int, Item], completed_id: int) -> set[int]:
+    """Finished boots other than this pair. Basic Boots stay a component, not a swap."""
+    parts = component_ids(completed_id, items)
+    found: set[int] = set()
+    for item_id, count in owned.items():
+        if count <= 0 or item_id in {completed_id, BASIC_BOOTS_ID} or item_id in parts:
+            continue
+        meta = items.get(item_id)
+        if meta is not None and "Boots" in meta.tags:
+            found.add(item_id)
+    return found
 
 
 def _lookup_item(item_id: int, items: dict[int, Item]) -> Item | None:
@@ -641,6 +754,7 @@ def _keep_score(
     bridge: bool,
     orphan: bool,
     mr_built: str,
+    kit: Kit | None = None,
 ) -> tuple[float, str, bool]:
     """Higher score means the item still matches the game and should stay."""
     if orphan:
@@ -707,10 +821,32 @@ def _keep_score(
     if count > 1:
         penalties.append((0.75, "A second copy adds less than the rest of this inventory"))
     score -= sum(amount for amount, _why in penalties)
+    shopper = kit or _kit_from_profile(profile)
+    if not item_fits_kit(meta, "answer", shopper):
+        # A wrong-stat item does not keep its resist score. The specific reason stays.
+        score = min(score, 0.0) - 3.0
+        if not penalties:
+            penalties.append((3.0, "It does not fit this champion"))
     if not penalties:
         return score, "", False
     penalties.sort(key=lambda row: row[0], reverse=True)
     return score, penalties[0][1], True
+
+
+def _kit_from_profile(profile: str) -> Kit:
+    if profile == "Tank":
+        return Kit(profile, "tank", "both", "Tank")
+    if profile == "Support":
+        return Kit(profile, "ap", "spell", "Enchanter")
+    if profile == "Mage":
+        return Kit(profile, "ap", "spell", "Mage")
+    if profile == "Battlemage":
+        return Kit(profile, "ap", "both", "Battlemage")
+    if profile == "Marksman":
+        return Kit(profile, "ad", "auto", "Marksman")
+    if profile == "Assassin":
+        return Kit(profile, "ad", "spell", "Assassin")
+    return Kit(profile, "ad", "both", profile)
 
 
 def choose_sell(
@@ -725,6 +861,8 @@ def choose_sell(
     bridge: bool = False,
     inventory_full: bool = False,
     item_labels: dict[int, str] | None = None,
+    kit: Kit | None = None,
+    allow_boot_sell: bool = False,
 ) -> SellChoice | None:
     """Owned item that least matches this game, or None when a slot is open.
 
@@ -734,7 +872,9 @@ def choose_sell(
     if not inventory_full:
         return None
     labels = item_labels or {}
-    locked = set(locked_ids) | _only_boots(owned, items)
+    locked = set(locked_ids)
+    if not allow_boot_sell:
+        locked |= _only_boots(owned, items)
     parents = _direct_parents(items)
     _totals, built, _line = item_pressure(enemy_builds, items)
     mr_built = _who_list(built.get("mr") or [])
@@ -758,6 +898,7 @@ def choose_sell(
             bridge=bridge,
             orphan=orphan,
             mr_built=mr_built,
+            kit=kit,
         )
         label = labels.get(item_id) or meta.name
         rows.append((score, meta.total, item_id, label, why, specific, _sell_role(meta, heal)))
@@ -811,6 +952,7 @@ def sell_for_buy(
     inventory_full: bool,
     item_labels: dict[int, str] | None = None,
     keep_ids: set[int] | None = None,
+    kit: Kit | None = None,
 ) -> SellChoice | None:
     if not inventory_full:
         return None
@@ -823,6 +965,14 @@ def sell_for_buy(
     locked = {completed_id, buy_id}
     if keep_ids:
         locked |= set(keep_ids)
+    completed = items.get(completed_id)
+    shopper = kit or _kit_from_profile(profile)
+    if completed is not None and not item_fits_kit(completed, "answer", shopper):
+        for item_id, count in owned.items():
+            owned_meta = items.get(item_id)
+            if count > 0 and owned_meta is not None and item_fits_kit(owned_meta, "answer", shopper):
+                locked.add(item_id)
+    swapping_boots = completed is not None and "Boots" in completed.tags
     return choose_sell(
         owned,
         items,
@@ -834,6 +984,8 @@ def sell_for_buy(
         bridge=bridge,
         inventory_full=True,
         item_labels=item_labels,
+        kit=shopper,
+        allow_boot_sell=swapping_boots,
     )
 
 
@@ -857,6 +1009,7 @@ class ShopAdvice:
     buys: tuple[Recommendation, ...]
     plan: tuple[str, ...]
     complete: bool
+    focus: str = ""
 
 
 def _finished_boots_id(owned: dict[int, int], items: dict[int, Item]) -> int:
@@ -889,36 +1042,48 @@ def _in_progress(item_id: int, owned: dict[int, int], items: dict[int, Item]) ->
     return any(owned.get(part, 0) > 0 and part != item_id for part in parts)
 
 
+def _is_core(row: ScoredBuy) -> bool:
+    return getattr(row.rule, "job", "answer") == "core"
+
+
+def _legal_boots(scored: list[ScoredBuy], owned: dict[int, int], items: dict[int, Item]) -> list[ScoredBuy]:
+    rows: list[ScoredBuy] = []
+    for row in scored:
+        if row.kind != "boots" or row.score <= 0:
+            continue
+        ignore = _other_finished_boots(owned, items, row.item_id)
+        if completion_blocked(row.item_id, owned, items, ignore):
+            continue
+        rows.append(row)
+    rows.sort(key=lambda row: (-row.score, row.item_id))
+    return rows
+
+
 def select_plan(
     scored: list[ScoredBuy],
     owned: dict[int, int],
     items: dict[int, Item],
 ) -> list[ScoredBuy]:
-    """Up to six finished items, boots included, that can sit in one inventory."""
-    by_id = {row.item_id: row for row in scored}
+    """Up to six finished items for one champion: own build, then the enemy answers."""
     chosen: list[ScoredBuy] = []
     chosen_ids: list[int] = []
 
     def add(row: ScoredBuy) -> None:
+        if row.item_id in chosen_ids:
+            return
         chosen.append(row)
         chosen_ids.append(row.item_id)
 
-    boots_id = _finished_boots_id(owned, items)
-    if boots_id:
-        row = by_id.get(boots_id)
-        if row is None:
-            meta = items.get(boots_id)
-            row = ScoredBuy(0.0, boots_id, "boots", meta.name if meta is not None else "Boots", None)
-        add(row)
-    else:
-        boots = [
-            row
-            for row in scored
-            if row.kind == "boots" and row.score > 0 and not completion_blocked(row.item_id, owned, items)
-        ]
-        boots.sort(key=lambda row: (-row.score, row.item_id))
-        if boots:
-            add(boots[0])
+    legal = _legal_boots(scored, owned, items)
+    owned_boots = _finished_boots_id(owned, items)
+    owned_row = next((row for row in legal if row.item_id == owned_boots), None)
+    if owned_row is not None:
+        add(owned_row)
+    elif legal:
+        add(legal[0])
+    elif owned_boots:
+        meta = items.get(owned_boots)
+        add(ScoredBuy(0.0, owned_boots, "boots", meta.name if meta is not None else "Boots", None))
 
     def usable(row: ScoredBuy, same_kind: bool) -> bool:
         if row.item_id in chosen_ids or row.kind == "boots":
@@ -934,21 +1099,37 @@ def select_plan(
         return True
 
     ordered = sorted(scored, key=lambda row: (-row.score, row.item_id))
-    owned_rows = [row for row in ordered if owned.get(row.item_id, 0) > 0]
-    new_rows = [row for row in ordered if owned.get(row.item_id, 0) <= 0]
 
-    def fill(rows: list[ScoredBuy]) -> None:
+    def owned_first(rows: list[ScoredBuy]) -> list[ScoredBuy]:
+        have = [row for row in rows if owned.get(row.item_id, 0) > 0]
+        missing = [row for row in rows if owned.get(row.item_id, 0) <= 0]
+        return have + missing
+
+    cores = owned_first([row for row in ordered if _is_core(row)])
+    answers = owned_first([row for row in ordered if not _is_core(row) and row.kind != "boots"])
+
+    def take(rows: list[ScoredBuy], limit: int) -> None:
+        if limit <= 0:
+            return
+        start = len(chosen)
         for same_kind in (False, True):
             for row in rows:
-                if len(chosen) >= PLAN_SLOTS:
+                if len(chosen) - start >= limit or len(chosen) >= PLAN_SLOTS:
                     return
                 if usable(row, same_kind):
                     add(row)
 
-    # Items already in the inventory keep their slots when they still fit.
-    # Empty slots are then the best missing answers, not a second copy of a job he has.
-    fill(owned_rows)
-    fill(new_rows)
+    legal_cores = 0
+    for row in cores:
+        if row.score < PLAN_FLOOR:
+            continue
+        if owned.get(row.item_id, 0) <= 0 and completion_blocked(row.item_id, owned, items):
+            continue
+        legal_cores += 1
+    reserve = min(CORE_SLOTS, legal_cores)
+    take(answers, PLAN_SLOTS - len(chosen) - reserve)
+    take(cores, PLAN_SLOTS - len(chosen))
+    take(answers, PLAN_SLOTS - len(chosen))
     return chosen
 
 
@@ -978,6 +1159,15 @@ def _order_buys(
         if len(picked) >= limit:
             break
         picked.append(row)
+    # A pair that does not fit this champion is replaced before a new component.
+    fixing = [
+        row
+        for row in picked
+        if row.kind == "boots" and _other_finished_boots(owned, items, row.item_id)
+    ]
+    if fixing:
+        rest = [row for row in picked if row.item_id not in {item.item_id for item in fixing}]
+        picked = fixing + rest
     return picked[:limit]
 
 
@@ -995,14 +1185,16 @@ def buys_for_plan(
     item_labels: dict[int, str] | None,
     limit: int,
     explain,
+    kit: Kit | None = None,
 ) -> list[Recommendation]:
-    unfinished = [
-        row
-        for row in plan
-        if row.rule is not None
-        and owned.get(row.item_id, 0) <= 0
-        and not completion_blocked(row.item_id, owned, items)
-    ]
+    unfinished = []
+    for row in plan:
+        if row.rule is None or owned.get(row.item_id, 0) > 0:
+            continue
+        ignore = _other_finished_boots(owned, items, row.item_id) if row.kind == "boots" else None
+        if completion_blocked(row.item_id, owned, items, ignore):
+            continue
+        unfinished.append(row)
     picks: list[Recommendation] = []
     keep = {row.item_id for row in plan}
     for row in _order_buys(unfinished, owned, items, limit):
@@ -1016,6 +1208,8 @@ def buys_for_plan(
             continue
         short = 0 if gold >= cost else max(1, math.ceil(cost - gold))
         why = explain(row.rule)
+        if kit is not None:
+            why = f"{why.rstrip('.')}. Fits {kit_focus(kit)}."
         started = _in_progress(row.item_id, owned, items)
         if not picks and started:
             why = f"Finish {completed.name}. {why}".strip()
@@ -1050,6 +1244,7 @@ def buys_for_plan(
                     inventory_full=True,
                     item_labels=item_labels,
                     keep_ids=keep,
+                    kit=kit,
                 ),
             )
         picks.append(rec)
@@ -1071,21 +1266,27 @@ def advise(
     threats = summarize(enemies)
     absorb_pressure(threats, enemy_builds, items)
     profile = build_profile(champion)
+    kit = champion_kit(champion)
     grievous_allow = _grievous_allow(owned)
-    boots_owned = _owns_boots(owned, items)
+    owned_boots = _finished_boots_id(owned, items)
+    owned_boot = items.get(owned_boots) if owned_boots else None
+    boots_fit = owned_boot is not None and item_fits_kit(owned_boot, "boots", kit)
     scored: list[ScoredBuy] = []
     for rule in RULES:
         if profile not in rule.profiles:
             continue
-        if rule.kind == "boots" and boots_owned:
-            continue
         owned_this = owned.get(rule.item_id, 0) > 0
+        if rule.kind == "boots" and boots_fit and rule.item_id != owned_boots:
+            continue
         if rule.kind == "grievous" and grievous_allow is not None and rule.item_id not in grievous_allow and not owned_this:
             continue
         meta = items.get(rule.item_id)
         if not _shop_item(meta) or meta is None:
             continue
-        if not owned_this and completion_blocked(rule.item_id, owned, items):
+        if not item_fits_kit(meta, rule.kind, kit):
+            continue
+        ignore = _other_finished_boots(owned, items, rule.item_id) if rule.kind == "boots" else None
+        if not owned_this and completion_blocked(rule.item_id, owned, items, ignore):
             continue
         score = rule.base + sum(threats.value(tag) * weight for tag, weight in rule.weights)
         if rule.item_id == 3065 and champion.id in HEAL_CHAMPS and threats.ap >= 1:
@@ -1108,9 +1309,10 @@ def advise(
         item_labels=item_labels,
         limit=limit,
         explain=lambda rule: _explain(rule, threats),
+        kit=kit,
     )
     complete = bool(plan) and all(owned.get(row.item_id, 0) > 0 for row in plan)
-    return ShopAdvice(tuple(buys), tuple(row.name for row in plan), complete)
+    return ShopAdvice(tuple(buys), tuple(row.name for row in plan), complete, kit_focus(kit))
 
 
 def recommend(

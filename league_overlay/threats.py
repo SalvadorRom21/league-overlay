@@ -192,6 +192,55 @@ def damage_type(champ: Champion) -> str:
     return "mixed"
 
 
+@dataclass(frozen=True)
+class Kit:
+    """What this champion actually spends gold on.
+
+    Damage is attack damage, ability power, or tank. Pattern is auto attacks,
+    spells, or both. Role is the shop profile, with enchanters called out so a
+    support does not inherit a mage's damage items.
+    """
+
+    profile: str
+    damage: str
+    pattern: str
+    role: str
+
+
+def champion_kit(champ: Champion) -> Kit:
+    """The build this champion uses before the enemy team changes the details."""
+    profile = build_profile(champ)
+    if champ.id in ENCHANTERS or profile == "Support":
+        return Kit(profile, "ap", "spell", "Enchanter")
+    if profile == "Tank":
+        return Kit(profile, "tank", "both", "Tank")
+    kind = damage_type(champ)
+    if kind == "mixed":
+        kind = "ap" if profile in {"Mage", "Battlemage"} else "ad"
+    if kind not in {"ad", "ap"}:
+        kind = "ad"
+    if profile == "Marksman" or champ.id in AS_EXTRA:
+        pattern = "auto"
+    elif profile == "Battlemage":
+        pattern = "both"
+    elif profile == "Assassin" or profile == "Mage" or kind == "ap":
+        pattern = "spell"
+    else:
+        pattern = "both"
+    return Kit(profile, kind, pattern, profile)
+
+
+def kit_focus(kit: Kit) -> str:
+    """Short line for the plan: the stats this champion is buying."""
+    if kit.role == "Enchanter":
+        return "enchanter shields and heals"
+    if kit.damage == "tank":
+        return "tank health and resists"
+    damage = "ability power" if kit.damage == "ap" else "attack damage"
+    pattern = {"auto": "auto attacks", "spell": "spells", "both": "autos and spells"}[kit.pattern]
+    return f"{damage} on {pattern}"
+
+
 def build_profile(champ: Champion) -> str:
     """Which item set this champion shops. See HEURISTIC.md."""
     forced = PROFILE_OVERRIDE.get(champ.id)

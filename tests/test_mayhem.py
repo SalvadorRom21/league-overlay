@@ -236,13 +236,14 @@ class ShopTests(unittest.TestCase):
         self.assertNotIn("Maw of Malmortius", names)
         self.assertNotIn("Guardian's Hammer", names)
 
-    def test_attack_damage_inventory_does_not_buy_an_ability_power_legendary(self) -> None:
-        kennen = champ(85, "Kennen", "Kennen", ["Mage", "Marksman"], 6, 7, 4)
+    def test_a_mage_keeps_ability_power_after_buying_attack_damage(self) -> None:
+        kennen = champ(85, "Kennen", "Kennen", ["Mage"], 6, 7, 4)
         base = bridge_catalog()
         items = dict(base.items)
         items[6672] = shop_item(6672, "Kraken Slayer", 3000, tags=("Damage", "AttackSpeed"))
         items[3094] = shop_item(3094, "Rapid Firecannon", 2600, tags=("Damage", "CriticalStrike", "AttackSpeed"))
-        items[3033] = shop_item(3033, "Mortal Reminder", 3000)
+        items[3033] = shop_item(3033, "Mortal Reminder", 3000, tags=("Damage", "ArmorPenetration"))
+        items[3072] = shop_item(3072, "Bloodthirster", 3400, tags=("Damage", "LifeSteal"))
         catalog = DragonData("test", [*base.by_key.values(), kennen], items)
         payload = game("KIWI")
         payload["allPlayers"][0]["championName"] = "Kennen"
@@ -253,9 +254,13 @@ class ShopTests(unittest.TestCase):
         payload["allPlayers"][1]["championName"] = "Soraka"
         view, _interval = build_view(LiveResult("ok", payload), LcuResult.down(), catalog)
         text = buy_text(view)
-        self.assertIn("Mortal Reminder", text)
-        self.assertNotIn("Rite of Ruin", text)
-        self.assertNotIn("Morellonomicon", text)
+        self.assertNotIn("Mortal Reminder", text)
+        self.assertNotIn("Bloodthirster", text)
+        self.assertNotIn("Kraken", text)
+        self.assertTrue("Morellonomicon" in text or "Rite of Ruin" in text or "Zhonya" in text)
+        self.assertIn("Plan:", view.ingame.detail_line)
+        self.assertIn("ability power", view.ingame.detail_line)
+        self.assertNotIn("Mortal Reminder", view.ingame.detail_line)
 
     def test_queue_id_on_the_lobby_labels_mayhem_during_select(self) -> None:
         catalog = bridge_catalog()

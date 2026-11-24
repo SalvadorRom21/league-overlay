@@ -18,10 +18,12 @@ from league_overlay.items import (
     Recommendation,
     ScoredBuy,
     _grievous_allow,
-    _owns_boots,
     absorb_pressure,
+    _finished_boots_id,
+    _other_finished_boots,
     buys_for_plan,
     completion_blocked,
+    item_fits_kit,
     select_plan,
 )
 from league_overlay.model import Champion, Item
@@ -29,8 +31,10 @@ from league_overlay.threats import (
     ENCHANTERS,
     HEAL_CHAMPS,
     build_profile,
+    champion_kit,
     damage_type,
     damage_weight,
+    kit_focus,
     tank_value,
 )
 
@@ -82,6 +86,7 @@ class BridgeRule:
     base: float = 0.0
     mayhem_only: bool = False
     early_only: bool = False
+    job: str = "answer"
 
 
 ALL = frozenset({"Tank", "Fighter", "Assassin", "Marksman", "Mage", "Battlemage", "Support"})
@@ -94,8 +99,11 @@ RULES: tuple[BridgeRule, ...] = (
     BridgeRule(2051, frozenset({"Tank", "Support"}), (), "starter", "A tank start for the first fountain", early_only=True, base=3.2),
     BridgeRule(3112, frozenset({"Mage", "Battlemage"}), (), "starter", "A mage start for the first fountain", early_only=True, base=3.2),
     BridgeRule(3184, frozenset({"Marksman", "Fighter", "Assassin"}), (), "starter", "An attacker start for the first fountain", early_only=True, base=3.2),
-    BridgeRule(3047, ALL, (("ad", 1.2), ("attack_speed", 0.8)), "boots", "Armor boots, after a combat item"),
-    BridgeRule(3111, ALL, (("ap", 1.2), ("burst", 0.4)), "boots", "Magic-resist boots, after a combat item"),
+    BridgeRule(3047, ALL, (("ad", 1.2), ("attack_speed", 0.8)), "boots", "Armor boots, after a combat item", base=0.15),
+    BridgeRule(3111, ALL, (("ap", 1.2), ("burst", 0.4)), "boots", "Magic-resist boots, after a combat item", base=0.15),
+    BridgeRule(3020, AP, (), "boots", "Magic penetration boots for spells", base=1.6),
+    BridgeRule(3006, frozenset({"Marksman", "Fighter"}), (("attack_speed", 0.2),), "boots", "Attack speed boots for auto attacks", base=1.6),
+    BridgeRule(3158, frozenset({"Assassin", "Support"}), (), "boots", "Ability haste boots for spells", base=1.5),
     BridgeRule(
         3075,
         frozenset({"Tank", "Fighter", "Support"}),
@@ -124,7 +132,7 @@ RULES: tuple[BridgeRule, ...] = (
         "grievous",
         "Ability power and grievous wounds for poke",
     ),
-    BridgeRule(3083, frozenset({"Tank", "Fighter"}), (("poke", 1.15),), "sustain", "Health regen between waves. You do not recall to a side shop", base=2.0),
+    BridgeRule(3083, frozenset({"Tank"}), (("poke", 1.15),), "sustain", "Health regen between waves. You do not recall to a side shop", base=2.0, job="core"),
     BridgeRule(3065, frozenset({"Tank", "Fighter", "Battlemage", "Support"}), (("ap", 0.8), ("poke", 0.35)), "sustain", "Magic resist that boosts your own healing", base=0.4),
     BridgeRule(4401, frozenset({"Tank", "Fighter", "Battlemage"}), (("ap", 1.35), ("poke", 0.45)), "mr", "Magic resist that stacks while spells keep landing"),
     BridgeRule(2504, frozenset({"Tank", "Support"}), (("ap", 1.05), ("poke", 0.7)), "mr", "A magic shield against repeated spells"),
@@ -132,11 +140,12 @@ RULES: tuple[BridgeRule, ...] = (
     BridgeRule(3156, CARRY, (("ap", 1.1), ("poke", 0.4)), "mr", "A magic shield on an attack-damage item"),
     BridgeRule(3143, FRONT, (("ad", 0.85), ("attack_speed", 0.7)), "armor", "Armor against basic attacks on one lane"),
     BridgeRule(3110, frozenset({"Tank", "Support"}), (("attack_speed", 1.2), ("ad", 0.4)), "armor", "Armor and an attack-speed aura"),
-    BridgeRule(3068, frozenset({"Tank"}), (("ad", 0.7),), "armor", "Armor that burns whoever stands on you"),
+    BridgeRule(3068, frozenset({"Tank"}), (("ad", 0.7),), "armor", "Armor that burns whoever stands on you", base=1.15, job="core"),
+    BridgeRule(6664, frozenset({"Tank"}), (("ap", 0.35),), "mr", "Magic resist and a burn for a tank", base=1.15, job="core"),
     BridgeRule(3190, frozenset({"Tank", "Support"}), (("poke", 0.7), ("burst", 0.45)), "armor", "A team shield while everyone is in one fight"),
     BridgeRule(4628, AP, (("poke", 1.35),), "poke", "Damage on the long-range spells that define the bridge"),
     BridgeRule(6653, AP, (("tank", 1.45), ("poke", 0.35), ("mr", 1.15)), "poke", "A burn into the frontline you cannot walk around"),
-    BridgeRule(6655, frozenset({"Mage"}), (("burst", 0.8),), "poke", "Burst into squishy targets once the wave is poked down", base=0.6),
+    BridgeRule(6655, frozenset({"Mage", "Battlemage"}), (("burst", 0.8),), "poke", "Ability power that procs on spells", base=1.7, job="core"),
     BridgeRule(6695, CARRY, (("poke", 0.2),), "shields", "Cuts shields from an enemy item or augment", base=0.0),
     BridgeRule(3157, frozenset({"Mage", "Battlemage", "Support"}), (("burst", 1.25), ("ad", 0.55)), "anti_burst", "Stasis when the bridge fight collapses onto you"),
     BridgeRule(
@@ -162,14 +171,6 @@ RULES: tuple[BridgeRule, ...] = (
     ),
     BridgeRule(3071, AD_BRUISER, (("tank", 1.65),), "pen", "Armor shred for physical damage on one lane"),
     BridgeRule(
-        3072,
-        frozenset({"Marksman"}),
-        (("poke", 0.85),),
-        "lifesteal",
-        "Lifesteal between health relics. You do not recall to heal",
-        base=0.8,
-    ),
-    BridgeRule(
         3139,
         frozenset({"Marksman", "Assassin"}),
         (("ap", 0.95), ("poke", 0.3)),
@@ -183,7 +184,7 @@ RULES: tuple[BridgeRule, ...] = (
         "spellshield",
         "A spell shield so poke does not cancel the all-in",
     ),
-    BridgeRule(3039, frozenset({"Tank", "Fighter"}), (("ad", 0.25),), "mayhem", "Mayhem item. Critical strike that scales with bonus health", base=2.6, mayhem_only=True),
+    BridgeRule(3039, frozenset({"Tank", "Fighter"}), (("ad", 0.25),), "mayhem", "Mayhem item. Critical strike that scales with bonus health", base=0.85, mayhem_only=True),
     BridgeRule(
         123430,
         frozenset({"Mage", "Battlemage"}),
@@ -192,6 +193,7 @@ RULES: tuple[BridgeRule, ...] = (
         "Mayhem item. Spell casts grant critical strike and a shield",
         base=3.8,
         mayhem_only=True,
+        job="core",
     ),
     BridgeRule(
         124011,
@@ -202,11 +204,28 @@ RULES: tuple[BridgeRule, ...] = (
         base=3.4,
         mayhem_only=True,
     ),
-    BridgeRule(3089, AP, (), "capstone", "Ability power for a slot the threats do not already fill", base=0.9),
-    BridgeRule(3031, frozenset({"Marksman"}), (), "crit", "Critical strike for a slot the threats do not already fill", base=0.9),
-    BridgeRule(3094, frozenset({"Marksman"}), (("attack_speed", 0.35),), "zeal", "Attack speed once the fight is answered", base=0.75),
-    BridgeRule(3046, frozenset({"Marksman"}), (("attack_speed", 0.3),), "dancer", "A second attack-speed item for the last slot", base=0.7),
-    BridgeRule(3074, AD_BRUISER, (), "cleave", "Damage and healing for a fighter's last slot", base=0.8),
+    BridgeRule(3089, AP, (), "capstone", "Ability power for spells", base=1.85, job="core"),
+    BridgeRule(4645, AP, (), "core", "Ability power and magic penetration for spells", base=1.6, job="core"),
+    BridgeRule(4646, frozenset({"Mage", "Battlemage"}), (), "core", "Ability power burst for a mage", base=1.5, job="core"),
+    BridgeRule(4633, frozenset({"Battlemage"}), (), "core", "Ability power and health for a battlemage", base=1.7, job="core"),
+    BridgeRule(3031, frozenset({"Marksman", "Fighter"}), (), "crit", "Critical strike for auto attacks", base=1.85, job="core"),
+    BridgeRule(3094, frozenset({"Marksman", "Fighter"}), (("attack_speed", 0.35),), "zeal", "Attack speed for auto attacks", base=1.6, job="core"),
+    BridgeRule(3046, frozenset({"Marksman", "Fighter"}), (("attack_speed", 0.3),), "dancer", "A second attack-speed item for auto attacks", base=1.45, job="core"),
+    BridgeRule(3072, frozenset({"Marksman", "Fighter"}), (("poke", 0.85),), "lifesteal", "Lifesteal between health relics. You do not recall to heal", base=1.55, job="core"),
+    BridgeRule(6672, frozenset({"Marksman", "Fighter"}), (("attack_speed", 0.25),), "core", "Attack damage and attack speed for auto attacks", base=1.5, job="core"),
+    BridgeRule(3142, frozenset({"Assassin"}), (), "core", "Lethality for an assassin's abilities", base=1.7, job="core"),
+    BridgeRule(6692, frozenset({"Assassin", "Fighter"}), (), "core", "Attack damage for short trades", base=1.6, job="core"),
+    BridgeRule(6698, frozenset({"Assassin"}), (), "core", "Lethality and ability haste for abilities", base=1.55, job="core"),
+    BridgeRule(3078, frozenset({"Fighter"}), (("attack_speed", 0.2),), "core", "Attack damage, attack speed, and ability haste for a fighter", base=1.65, job="core"),
+    BridgeRule(6631, frozenset({"Fighter"}), (), "core", "Attack damage and a slow for a fighter", base=1.5, job="core"),
+    BridgeRule(3161, frozenset({"Fighter", "Assassin"}), (), "core", "Ability haste and attack damage", base=1.45, job="core"),
+    BridgeRule(3074, AD_BRUISER, (), "cleave", "Damage and healing for a fighter", base=1.6, job="core"),
+    BridgeRule(6617, frozenset({"Support"}), (), "core", "Healing for an enchanter", base=1.8, job="core"),
+    BridgeRule(3107, frozenset({"Support"}), (), "core", "A team heal for an enchanter", base=1.6, job="core"),
+    BridgeRule(6616, frozenset({"Support"}), (), "core", "Ability power for an enchanter and an ally", base=1.5, job="core"),
+    BridgeRule(2065, frozenset({"Support"}), (), "core", "A movespeed active for an enchanter", base=1.45, job="core"),
+    BridgeRule(3504, frozenset({"Support"}), (), "core", "Attack speed for the ally an enchanter is shielding", base=1.4, job="core"),
+    BridgeRule(3222, frozenset({"Support"}), (), "core", "A cleanse for an enchanter", base=1.35, job="core"),
 )
 
 
@@ -217,6 +236,7 @@ class BridgeBuyResult:
     detail: str
     plan: tuple[str, ...] = ()
     complete: bool = False
+    focus: str = ""
 
 
 @dataclass(frozen=True)
@@ -399,30 +419,9 @@ def match_detail(
 
 
 def shop_profile(champion: Champion, owned: dict[int, int], items: dict[int, Item]) -> str:
-    """Follow the stats already in the inventory when they disagree with the kit.
-
-    An AD Kennen in Mayhem has already bought crit and attack speed. The next
-    fountain buy should continue that, not switch into an ability-power legendary.
-    """
-    profile = build_profile(champion)
-    ad = 0
-    ap = 0
-    for item_id, count in owned.items():
-        if count <= 0:
-            continue
-        meta = items.get(item_id)
-        if meta is None:
-            continue
-        tags = set(meta.tags)
-        if tags & {"Damage", "CriticalStrike"}:
-            ad += count
-        if "SpellDamage" in tags:
-            ap += count
-    if ad >= 2 and ad > ap and profile in {"Mage", "Battlemage", "Support"}:
-        return "Marksman"
-    if ap >= 2 and ap > ad and profile in {"Marksman", "Fighter", "Assassin"}:
-        return "Mage"
-    return profile
+    """The champion's own shop profile. Owned items do not change damage type."""
+    del owned, items
+    return build_profile(champion)
 
 
 def recommend_bridge(
@@ -450,10 +449,13 @@ def recommend_bridge(
     threats = bridge_threats(enemies, enemy_augment_text or enemy_augments)
     building = absorb_pressure(threats, enemy_builds, items)
     profile = shop_profile(champion, owned, items)
+    kit = champion_kit(champion)
     flags = augment_flags(player_augment_text or player_augments)
     grievous_allow = _grievous_allow(owned)
     skipped_grievous = False
-    boots_owned = _owns_boots(owned, items)
+    owned_boots = _finished_boots_id(owned, items)
+    owned_boot = items.get(owned_boots) if owned_boots else None
+    boots_fit = owned_boot is not None and item_fits_kit(owned_boot, "boots", kit)
     item_count = sum(count for count in owned.values() if count > 0)
     scored: list[ScoredBuy] = []
     for rule in RULES:
@@ -463,9 +465,9 @@ def recommend_bridge(
             continue
         if rule.early_only and (not early or item_count > 1):
             continue
-        if rule.kind == "boots" and boots_owned:
-            continue
         owned_this = owned.get(rule.item_id, 0) > 0
+        if rule.kind == "boots" and boots_fit and rule.item_id != owned_boots:
+            continue
         if rule.kind == "grievous" and grievous_allow is not None and rule.item_id not in grievous_allow and not owned_this:
             continue
         if rule.kind == "shields" and threats.shield < 1:
@@ -475,7 +477,10 @@ def recommend_bridge(
         meta = items.get(rule.item_id)
         if not _on_bridge_shop(meta, items) or meta is None:
             continue
-        if not owned_this and completion_blocked(rule.item_id, owned, items):
+        if not item_fits_kit(meta, rule.kind, kit):
+            continue
+        ignore = _other_finished_boots(owned, items, rule.item_id) if rule.kind == "boots" else None
+        if not owned_this and completion_blocked(rule.item_id, owned, items, ignore):
             continue
         score = rule.base + sum(threats.value(tag) * weight for tag, weight in rule.weights)
         if rule.kind == "shields":
@@ -506,6 +511,7 @@ def recommend_bridge(
         item_labels=item_labels,
         limit=limit,
         explain=lambda rule: _explain(rule, threats),
+        kit=kit,
     )
     detail = ""
     if mention_augments or building:
@@ -526,6 +532,7 @@ def recommend_bridge(
         detail,
         tuple(row.name for row in plan),
         complete,
+        kit_focus(kit),
     )
 
 

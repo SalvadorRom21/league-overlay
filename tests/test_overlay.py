@@ -8,6 +8,7 @@ from pathlib import Path
 
 from league_overlay.catalog import DragonData, parse_items
 from league_overlay.items import (
+    advise,
     choose_sell,
     completion_blocked,
     enemy_build_line,
@@ -170,6 +171,83 @@ class ItemTests(unittest.TestCase):
         completed = {buy.completed_id for buy in buys}
         self.assertIn(3111, completed)
         self.assertTrue(completed & {4401, 2504})
+
+    def test_mage_plan_is_spell_items(self) -> None:
+        items = shop(
+            item(3020, "Sorcerer's Shoes", 1100, tags=("Boots", "MagicPenetration")),
+            item(3047, "Plated Steelcaps", 1200, tags=("Armor", "Boots")),
+            item(3089, "Rabadon's Deathcap", 3500, tags=("SpellDamage",)),
+            item(6655, "Luden's Echo", 2750, tags=("SpellDamage",)),
+            item(4645, "Shadowflame", 3200, tags=("SpellDamage",)),
+            item(3157, "Zhonya's Hourglass", 3250, tags=("Armor", "SpellDamage")),
+            item(3102, "Banshee's Veil", 3000, tags=("SpellBlock", "SpellDamage")),
+            item(3031, "Infinity Edge", 3500, tags=("Damage", "CriticalStrike")),
+            item(3072, "Bloodthirster", 3400, tags=("Damage", "LifeSteal")),
+        )
+        result = advise(AHRI, [ZED, TALON, QIYANA, NAAFIRI, RENGAR], {}, 5000, items)
+        self.assertEqual(len(result.plan), 6)
+        self.assertNotIn("Infinity Edge", result.plan)
+        self.assertNotIn("Bloodthirster", result.plan)
+        self.assertIn("Zhonya's Hourglass", result.plan)
+        self.assertTrue({"Luden's Echo", "Rabadon's Deathcap", "Shadowflame"} & set(result.plan))
+        self.assertEqual(result.focus, "ability power on spells")
+
+    def test_marksman_plan_is_attack_damage(self) -> None:
+        items = shop(
+            item(3006, "Berserker's Greaves", 1100, tags=("Boots", "AttackSpeed")),
+            item(3111, "Mercury's Treads", 1250, tags=("Boots", "SpellBlock")),
+            item(3031, "Infinity Edge", 3500, tags=("Damage", "CriticalStrike")),
+            item(3094, "Rapid Firecannon", 2650, tags=("Damage", "CriticalStrike", "AttackSpeed")),
+            item(3046, "Phantom Dancer", 2650, tags=("Damage", "CriticalStrike", "AttackSpeed")),
+            item(3072, "Bloodthirster", 3400, tags=("Damage", "LifeSteal")),
+            item(3156, "Maw of Malmortius", 3100, tags=("SpellBlock", "Damage")),
+            item(3089, "Rabadon's Deathcap", 3500, tags=("SpellDamage",)),
+            item(6653, "Liandry's Torment", 3000, tags=("Health", "SpellDamage")),
+        )
+        result = advise(JINX, [SYNDRA, ORIANNA, AZIR, ZIGGS, BRAND], {}, 5000, items)
+        self.assertEqual(len(result.plan), 6)
+        self.assertNotIn("Rabadon's Deathcap", result.plan)
+        self.assertNotIn("Liandry's Torment", result.plan)
+        self.assertIn("Infinity Edge", result.plan)
+        self.assertEqual(result.focus, "attack damage on auto attacks")
+
+    def test_tank_plan_stays_defensive_against_squishy_mages(self) -> None:
+        items = shop(
+            item(3111, "Mercury's Treads", 1250, tags=("Boots", "SpellBlock")),
+            item(3047, "Plated Steelcaps", 1200, tags=("Armor", "Boots")),
+            item(4401, "Force of Nature", 2800, tags=("Health", "SpellBlock")),
+            item(2504, "Kaenic Rookern", 2900, tags=("Health", "SpellBlock")),
+            item(3068, "Sunfire Aegis", 2800, tags=("Health", "Armor")),
+            item(6664, "Hollow Radiance", 2800, tags=("Health", "SpellBlock")),
+            item(3083, "Warmog's Armor", 3100, tags=("Health",)),
+            item(3031, "Infinity Edge", 3500, tags=("Damage", "CriticalStrike")),
+            item(3089, "Rabadon's Deathcap", 3500, tags=("SpellDamage",)),
+            item(3074, "Ravenous Hydra", 3300, tags=("Damage", "LifeSteal")),
+        )
+        result = advise(MALPHITE, [SYNDRA, ORIANNA, AZIR, ZIGGS, BRAND], {}, 5000, items)
+        self.assertEqual(len(result.plan), 6)
+        for name in ("Infinity Edge", "Rabadon's Deathcap", "Ravenous Hydra"):
+            self.assertNotIn(name, result.plan)
+        self.assertTrue(any(name in result.plan for name in ("Force of Nature", "Kaenic Rookern", "Hollow Radiance")))
+        self.assertEqual(result.focus, "tank health and resists")
+
+    def test_full_mage_inventory_sells_attack_damage_not_a_core(self) -> None:
+        items = shop(
+            item(3089, "Rabadon's Deathcap", 3500, tags=("SpellDamage",)),
+            item(6655, "Luden's Echo", 2750, tags=("SpellDamage",)),
+            item(4645, "Shadowflame", 3200, tags=("SpellDamage",)),
+            item(4646, "Stormsurge", 2800, tags=("SpellDamage",)),
+            item(3020, "Sorcerer's Shoes", 1100, tags=("Boots", "MagicPenetration")),
+            item(3156, "Maw of Malmortius", 3100, tags=("SpellBlock", "Damage")),
+            item(3157, "Zhonya's Hourglass", 3250, tags=("Armor", "SpellDamage")),
+            item(3102, "Banshee's Veil", 3000, tags=("SpellBlock", "SpellDamage")),
+        )
+        owned = {3089: 1, 6655: 1, 4645: 1, 4646: 1, 3020: 1, 3156: 1}
+        buys = recommend(AHRI, [SYNDRA, ORIANNA, AZIR, ZIGGS, BRAND], owned, 2000, items, inventory_full=True)
+        self.assertTrue(buys)
+        self.assertEqual(buys[0].sell_name, "Maw of Malmortius")
+        self.assertNotEqual(buys[0].sell_id, 3089)
+        self.assertNotIn(buys[0].completed_name, {"Maw of Malmortius", "Infinity Edge"})
 
     def test_owned_grievous_is_not_recommended_again(self) -> None:
         items = shop(
@@ -533,7 +611,7 @@ class SellTests(unittest.TestCase):
         self.assertEqual(buys[0].completed_id, 3157)
         self.assertNotEqual(buys[0].sell_id, 1058)
         self.assertNotEqual(buys[0].sell_id, 3020)
-        self.assertNotEqual(buys[0].sell_id, 3075)
+        self.assertEqual(buys[0].sell_id, 3075)
         self.assertIn(buys[0].sell_id, owned)
         self.assertTrue(all(buy.sell_name == "" for buy in buys[1:]))
         open_slot = recommend(AHRI, enemies, owned, 400, items)

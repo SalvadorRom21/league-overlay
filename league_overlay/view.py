@@ -68,10 +68,12 @@ def _slot_line(names: list[str], slots: int) -> str:
     return f"{body} · {slots} of 6 slots"
 
 
-def _with_plan(detail: str, plan: tuple[str, ...]) -> str:
+def _with_plan(detail: str, plan: tuple[str, ...], focus: str = "") -> str:
     if not plan:
         return detail
     line = "Plan: " + ", ".join(plan)
+    if focus:
+        line = f"Plan: {focus} — " + ", ".join(plan)
     return f"{detail}\n{line}" if detail else line
 
 
@@ -246,6 +248,7 @@ def _ingame_panel(
         detail = result.detail
         plan = result.plan
         complete = result.complete
+        focus = result.focus
         empty = "No fountain buy stands out for this bridge."
     else:
         shop = advise(
@@ -261,9 +264,10 @@ def _ingame_panel(
         advice = list(shop.buys)
         plan = shop.plan
         complete = shop.complete
+        focus = shop.focus
         detail = enemy_build_line(game.enemy_builds, catalog.items)
         empty = "No counter buy stands out for this team."
-    detail = _with_plan(detail, plan)
+    detail = _with_plan(detail, plan, focus)
     if not advice:
         return InGamePanel(
             True,
@@ -470,7 +474,7 @@ def _saved_panel(
             inventory_full=full,
         )
         advice = list(result.buys)
-        detail = _with_plan(result.detail, result.plan)
+        detail = _with_plan(result.detail, result.plan, result.focus)
         message = "" if advice else _empty_buy("No fountain buy stands out for this bridge.", result.plan, result.complete, slots)
         return InGamePanel(
             True,
@@ -499,6 +503,7 @@ def _saved_panel(
             building=enemy_build_line(builds, catalog.items),
         ),
         shop.plan,
+        shop.focus,
     )
     threat = threat_line(summarize(enemies)) if enemies else ""
     advice = list(shop.buys)
