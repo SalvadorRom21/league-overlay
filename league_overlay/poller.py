@@ -10,6 +10,7 @@ from league_overlay.catalog import Catalog
 from league_overlay.lcu import LcuResult, fetch_lcu
 from league_overlay.live import LiveResult, fetch_live
 from league_overlay.paths import CACHE, DRAGON_CACHE
+from league_overlay.screen_augments import ScreenWatcher
 from league_overlay.view import IDLE_INTERVAL, OverlayView, build_view
 
 
@@ -21,9 +22,11 @@ class Poller:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._last_print: str | None = None
+        self._screen = ScreenWatcher()
         self._view, self._interval = self._safe_view(initial=True)
 
     def start(self) -> None:
+        self._screen.start()
         threading.Thread(target=self.catalog.ensure, name="ddragon", daemon=True).start()
         threading.Thread(target=self._ensure_augments, name="augments", daemon=True).start()
         threading.Thread(target=self._loop, name="league-poll", daemon=True).start()
@@ -41,12 +44,16 @@ class Poller:
 
     def stop(self) -> None:
         self._stop.set()
+        self._screen.stop()
 
     def _safe_view(self, initial: bool) -> tuple[OverlayView, float]:
         if initial:
             return build_view(LiveResult.down(), LcuResult.down(), self.catalog.snapshot(), self.augments)
         try:
-            return build_view(fetch_live(), fetch_lcu(), self.catalog.snapshot(), self.augments)
+            live = fetch_live()
+            lcu = fetch_lcu()
+            self._screen.update(live.data, lcu.queue_id, self.augments)
+            return build_view(live, lcu, self.catalog.snapshot(), self.augments, self._screen.snapshot())
         except Exception:
             traceback.print_exc()
             return build_view(LiveResult("error"), LcuResult("error"), self.catalog.snapshot())

@@ -370,15 +370,17 @@ def match_detail(
     skipped_grievous: bool = False,
     building: str = "",
     mention_missing: bool = True,
+    cards: tuple[str, ...] = (),
+    absent: str = "Augments are not visible yet.",
 ) -> str:
     lines: list[str] = []
+    if cards:
+        lines.append("Augment cards on screen: " + _clip(cards, 4))
     if player:
         lines.append("Your augments: " + _clip(player, 6))
-    elif mention_missing:
+    elif mention_missing and not cards:
         if not exposed:
-            lines.append(
-                "Augments were not in the live client data. They show here once the client records the match."
-            )
+            lines.append(absent)
         else:
             lines.append("No augments equipped yet.")
     if enemy:
@@ -436,6 +438,8 @@ def recommend_bridge(
     limit: int = 2,
     inventory_full: bool = False,
     item_labels: dict[int, str] | None = None,
+    cards: tuple[str, ...] = (),
+    absent: str = "Augments are not visible yet.",
 ) -> BridgeBuyResult:
     threats = bridge_threats(enemies, enemy_augment_text or enemy_augments)
     building = absorb_pressure(threats, enemy_builds, items)
@@ -537,6 +541,8 @@ def recommend_bridge(
             skipped_grievous=skipped_grievous,
             building=building,
             mention_missing=mention_augments,
+            cards=cards,
+            absent=absent,
         )
     return BridgeBuyResult(tuple(buys), threat_line(threats), detail)
 

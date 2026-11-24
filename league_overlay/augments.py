@@ -29,6 +29,13 @@ _FLAG_PATTERNS = (
 )
 
 
+def norm_token(value: str) -> str:
+    """Letters and digits only, so 'BEES!!!' and 'Can't' compare cleanly."""
+    text = (value or "").casefold()
+    text = text.replace("'", "").replace("\u2019", "").replace("\u2018", "")
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
 def flags_from_text(*parts: str) -> tuple[str, ...]:
     text = " ".join(parts).casefold()
     return tuple(name for name, pattern in _FLAG_PATTERNS if pattern.search(text))
@@ -73,6 +80,12 @@ class AugmentBook:
         }
         book.ready = True
         return book
+
+    def all(self) -> tuple[Augment, ...]:
+        return tuple(self._by_id.values())
+
+    def names(self) -> tuple[str, ...]:
+        return tuple(aug.name for aug in self._by_id.values())
 
     def get(self, aug_id: int) -> Augment | None:
         try:
@@ -167,6 +180,34 @@ def resolve_augments(
         display.append(cleaned)
         scoring.append(cleaned)
         seen.add(cleaned)
+    return tuple(display), tuple(scoring)
+
+
+def names_from_screen(
+    book: AugmentBook | None,
+    names: tuple[str, ...] | list[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Keep screen names that are already on the augment list. Do not invent any."""
+    index: dict[str, Augment] = {}
+    ready = book is not None and book.ready
+    if ready and book is not None:
+        for aug in book.all():
+            index.setdefault(norm_token(aug.name), aug)
+    display: list[str] = []
+    scoring: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        key = norm_token(str(name))
+        aug = index.get(key)
+        if ready and aug is None:
+            continue
+        label = aug.name if aug is not None else str(name).strip()
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        display.append(label)
+        text = f"{label} {aug.blurb}".strip() if aug is not None else label
+        scoring.append(text)
     return tuple(display), tuple(scoring)
 
 

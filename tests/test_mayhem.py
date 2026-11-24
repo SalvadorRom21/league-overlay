@@ -151,7 +151,7 @@ class ShopTests(unittest.TestCase):
         self.assertNotIn("Dead Man", text)
         self.assertEqual(view.headline, "In game · ARAM: Mayhem")
         self.assertIn("fountain", view.note.lower())
-        self.assertIn("not in the live client", view.ingame.detail_line.lower())
+        self.assertIn("not visible yet", view.ingame.detail_line.lower())
 
     def test_normal_aram_skips_mayhem_legendaries(self) -> None:
         catalog = bridge_catalog()

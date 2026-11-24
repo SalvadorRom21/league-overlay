@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from league_overlay.augments import AugmentBook, resolve_augments
+from league_overlay.augments import AugmentBook, names_from_screen, resolve_augments
 from league_overlay.bridge import match_detail, recommend_bridge, suggest_bridge
 from league_overlay.catalog import DragonData
 from league_overlay.items import Recommendation, enemy_build_line, recommend
@@ -14,6 +14,7 @@ from league_overlay.live import LiveResult, ParsedGame, parse_game
 from league_overlay.modeinfo import ModeInfo, detect_mode
 from league_overlay.model import Champion
 from league_overlay.picks import normalize_position, suggest
+from league_overlay.screen_augments import ScreenHit
 from league_overlay.threats import threat_line, summarize
 
 ACTIVE_INTERVAL = 0.35
@@ -136,12 +137,29 @@ def _resolved_augments(
     return yours, your_text, enemies, enemy_text
 
 
+def _use_screen(
+    book: AugmentBook | None,
+    current: tuple[str, ...],
+    current_text: tuple[str, ...],
+    seen: tuple[str, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    extra, extra_text = names_from_screen(book, seen)
+    names = list(current)
+    text = list(current_text)
+    for name, line in zip(extra, extra_text):
+        if name not in names:
+            names.append(name)
+            text.append(line)
+    return tuple(names), tuple(text)
+
+
 def _ingame_panel(
     live: LiveResult,
     catalog: DragonData,
     mode: ModeInfo,
     lcu: LcuResult,
     augments: AugmentBook | None,
+    screen: ScreenHit | None = None,
 ) -> InGamePanel:
     if live.status == "down":
         return InGamePanel(False, "No active game.")
@@ -173,6 +191,11 @@ def _ingame_panel(
             items_line,
         )
     yours, your_text, enemy_names, enemy_text = _resolved_augments(augments, game, lcu.board)
+    cards: tuple[str, ...] = ()
+    if screen is not None and mode.kind in {"mayhem", "aram-unconfirmed"}:
+        yours, your_text = _use_screen(augments, yours, your_text, screen.yours)
+        enemy_names, enemy_text = _use_screen(augments, enemy_names, enemy_text, screen.enemies)
+        cards = tuple(names_from_screen(augments, screen.cards)[0])
     full = game.item_slots >= 6
     detail = ""
     if mode.bridge:
@@ -194,6 +217,7 @@ def _ingame_panel(
             mention_augments=mode.kind in {"mayhem", "aram-unconfirmed"},
             inventory_full=full,
             item_labels=game.item_labels,
+            cards=cards,
         )
         advice = list(result.buys)
         threat = result.threat_line
@@ -457,9 +481,10 @@ def build_view(
     lcu: LcuResult,
     catalog: DragonData,
     augments: AugmentBook | None = None,
+    screen: ScreenHit | None = None,
 ) -> tuple[OverlayView, float]:
     detected = _detected(live, lcu)
-    ingame = _ingame_panel(live, catalog, detected, lcu, augments)
+    ingame = _ingame_panel(live, catalog, detected, lcu, augments, screen)
     picks = _pick_panel(lcu, catalog, detected)
     in_game = live.status == "ok" and ingame.active
     in_select = lcu.status == "champselect"
