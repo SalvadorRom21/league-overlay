@@ -465,7 +465,8 @@ def recommend_bridge(
             continue
         if rule.kind == "boots" and boots_owned:
             continue
-        if rule.kind == "grievous" and grievous_allow is not None and rule.item_id not in grievous_allow:
+        owned_this = owned.get(rule.item_id, 0) > 0
+        if rule.kind == "grievous" and grievous_allow is not None and rule.item_id not in grievous_allow and not owned_this:
             continue
         if rule.kind == "shields" and threats.shield < 1:
             continue
@@ -474,7 +475,6 @@ def recommend_bridge(
         meta = items.get(rule.item_id)
         if not _on_bridge_shop(meta, items) or meta is None:
             continue
-        owned_this = owned.get(rule.item_id, 0) > 0
         if not owned_this and completion_blocked(rule.item_id, owned, items):
             continue
         score = rule.base + sum(threats.value(tag) * weight for tag, weight in rule.weights)
@@ -486,7 +486,8 @@ def recommend_bridge(
             score += 2.2
         if rule.kind == "grievous" and "grievous" in flags:
             skipped_grievous = True
-            continue
+            if not owned_this:
+                continue
         floor = 0.0 if rule.kind == "boots" else PLAN_FLOOR
         if score < floor:
             continue

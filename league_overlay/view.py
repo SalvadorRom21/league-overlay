@@ -8,9 +8,9 @@ from dataclasses import dataclass, field
 from league_overlay.augments import AugmentBook, names_from_screen, resolve_augments
 from league_overlay.bridge import match_detail, recommend_bridge, suggest_bridge
 from league_overlay.catalog import DragonData
-from league_overlay.items import Recommendation, advise, enemy_build_line, recommend
+from league_overlay.items import Recommendation, advise, enemy_build_line
 from league_overlay.lcu import ChampSelect, LcuResult, MatchBoard
-from league_overlay.live import LiveResult, ParsedGame, parse_game
+from league_overlay.live import TRINKETS, LiveResult, ParsedGame, parse_game
 from league_overlay.modeinfo import ModeInfo, detect_mode
 from league_overlay.model import Champion
 from league_overlay.picks import normalize_position, suggest
@@ -420,13 +420,14 @@ def _saved_panel(
     you: Champion | None = None
     your_label = local.champion_name if local and local.champion_name else "Your champion"
     owned: dict[int, int] = {}
+    item_ids = [item_id for item_id in (local.items if local else ()) if item_id not in TRINKETS]
     if local is not None:
         if local.champion_name:
             your_label = local.champion_name
         you = catalog.champion_by_key(local.champion_id)
         if you is not None:
             your_label = you.name
-        for item_id in local.items:
+        for item_id in item_ids:
             owned[item_id] = owned.get(item_id, 0) + 1
     enemies: list[Champion] = []
     enemy_labels: list[str] = []
@@ -437,18 +438,20 @@ def _saved_panel(
         enemy_labels.append(label)
         if champ is not None:
             enemies.append(champ)
-        if player.items:
-            builds.append((label, player.items))
+        enemy_items = tuple(item_id for item_id in player.items if item_id not in TRINKETS)
+        if enemy_items:
+            builds.append((label, enemy_items))
     enemy_line = "vs " + ", ".join(enemy_labels) if enemy_labels else "No enemies in this match."
     item_names = []
     for item_id in owned:
         meta = catalog.items.get(item_id)
         item_names.append(meta.name if meta is not None else str(item_id))
-    items_line = "Items: " + ", ".join(item_names) if item_names else "Items: empty"
+    slots = len(item_ids)
+    items_line = _slot_line(item_names, slots)
     if you is None or not catalog.ready:
         detail = match_detail(yours, enemy_names, exposed=True, building=enemy_build_line(builds, catalog.items))
         return InGamePanel(True, "", your_label, enemy_line, "", items_line, detail)
-    full = local is not None and len(local.items) >= 6
+    full = slots >= 6
     if mode.bridge:
         result = recommend_bridge(
             you,
@@ -466,17 +469,20 @@ def _saved_panel(
             mention_augments=True,
             inventory_full=full,
         )
+        advice = list(result.buys)
+        detail = _with_plan(result.detail, result.plan)
+        message = "" if advice else _empty_buy("No fountain buy stands out for this bridge.", result.plan, result.complete, slots)
         return InGamePanel(
             True,
-            "",
+            message,
             your_label,
             enemy_line,
             result.threat_line,
             items_line,
-            result.detail,
-            tuple(_buy_view(rec, index) for index, rec in enumerate(result.buys)),
+            detail,
+            tuple(_buy_view(rec, index) for index, rec in enumerate(advice)),
         )
-    advice = recommend(
+    shop = advise(
         you,
         enemies,
         owned,
@@ -485,16 +491,20 @@ def _saved_panel(
         enemy_builds=builds,
         inventory_full=full,
     )
-    detail = match_detail(
-        yours,
-        enemy_names,
-        exposed=True,
-        building=enemy_build_line(builds, catalog.items),
+    detail = _with_plan(
+        match_detail(
+            yours,
+            enemy_names,
+            exposed=True,
+            building=enemy_build_line(builds, catalog.items),
+        ),
+        shop.plan,
     )
     threat = threat_line(summarize(enemies)) if enemies else ""
+    advice = list(shop.buys)
     return InGamePanel(
         True,
-        "" if advice else "No counter buy stands out for this team.",
+        "" if advice else _empty_buy("No counter buy stands out for this team.", shop.plan, shop.complete, slots),
         your_label,
         enemy_line,
         threat,

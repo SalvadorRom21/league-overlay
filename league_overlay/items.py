@@ -1079,12 +1079,12 @@ def advise(
             continue
         if rule.kind == "boots" and boots_owned:
             continue
-        if rule.kind == "grievous" and grievous_allow is not None and rule.item_id not in grievous_allow:
+        owned_this = owned.get(rule.item_id, 0) > 0
+        if rule.kind == "grievous" and grievous_allow is not None and rule.item_id not in grievous_allow and not owned_this:
             continue
         meta = items.get(rule.item_id)
         if not _shop_item(meta) or meta is None:
             continue
-        owned_this = owned.get(rule.item_id, 0) > 0
         if not owned_this and completion_blocked(rule.item_id, owned, items):
             continue
         score = rule.base + sum(threats.value(tag) * weight for tag, weight in rule.weights)
