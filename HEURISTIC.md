@@ -37,6 +37,8 @@ One-of shop rules come from the item text and the recipe, not from a win rate. L
 
 The path itself is the Data Dragon recipe. The overlay walks components you already own and picks the cheapest next step you can buy. If you can afford one, that step wins. The panel shows that component, then the completed item, then the reason with the enemy names that caused it.
 
+When all six item slots are full, that same next buy names one owned item to sell for it. The trinket slot stays out of the count unless the client put that item in an item slot. The sell is the piece that least matches the live game: a finished armor item when the damage is magic, a component that no longer completes a legal item on this map, or the weaker of two items doing the same job. Enemy champions, the items they already bought, his items, his gold, and the mode (including ARAM: Mayhem) are the same inputs as the buy. The only pair of boots, the item just recommended, and anything he does not own stay put. An open slot has no sell line.
+
 Spirit Visage gets an extra bump only when you are on the heal list and the enemy team actually deals magic damage.
 
 There is no generic "core build" when nothing counters the team. The panel says no counter buy stands out.

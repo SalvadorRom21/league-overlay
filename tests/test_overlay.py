@@ -7,9 +7,17 @@ import unittest
 from pathlib import Path
 
 from league_overlay.catalog import DragonData, parse_items
-from league_overlay.items import completion_blocked, enemy_build_line, frontier_buys, next_purchase, recommend
+from league_overlay.items import (
+    choose_sell,
+    completion_blocked,
+    enemy_build_line,
+    frontier_buys,
+    next_purchase,
+    recommend,
+)
 from league_overlay.lcu import ChampSelect, LcuResult, parse_lockfile, parse_session
-from league_overlay.live import LiveResult, match_player
+from league_overlay.live import LiveResult, match_player, parse_game
+from league_overlay.threats import Threats
 from league_overlay.model import Champion, Item
 from league_overlay.picks import suggest
 from league_overlay.roles import roles_for
@@ -365,6 +373,221 @@ class ViewTests(unittest.TestCase):
         self.assertIn("Waiting for League", readme)
         self.assertIn("Champion select is unavailable", readme)
         self.assertIn("win rate", heuristic.lower())
+
+
+def _magic_threats() -> Threats:
+    return Threats(
+        ap=4.0,
+        ad=0.3,
+        names={
+            "ad": [],
+            "ap": ["Diana", "Maokai"],
+            "tank": ["Maokai"],
+            "heal": [],
+            "attack_speed": [],
+            "burst": ["Diana"],
+            "mr": [],
+            "shield": [],
+        },
+    )
+
+
+class SellTests(unittest.TestCase):
+    def _magic_shop(self) -> dict[int, Item]:
+        return shop(
+            item(3075, "Thornmail", 2450, tags=("Health", "Armor")),
+            item(3020, "Sorcerer's Shoes", 1100, tags=("Boots", "MagicPenetration")),
+            item(6655, "Luden's Echo", 2600, tags=("SpellDamage",)),
+            item(6653, "Liandry's Torment", 3000, tags=("Health", "SpellDamage")),
+            item(4646, "Stormsurge", 3200, tags=("SpellDamage",)),
+            item(3102, "Banshee's Veil", 3000, tags=("SpellBlock", "SpellDamage")),
+            item(3211, "Spectre's Cowl", 1250, tags=("Health", "SpellBlock")),
+        )
+
+    def test_full_inventory_sells_finished_armor_against_magic_damage(self) -> None:
+        owned = {3075: 1, 3020: 1, 6655: 1, 6653: 1, 4646: 1, 3102: 1}
+        choice = choose_sell(
+            owned,
+            self._magic_shop(),
+            _magic_threats(),
+            protected_ids=set(),
+            locked_ids=set(),
+            profile="Mage",
+            enemy_builds=(("Maokai", (3211,)),),
+            inventory_full=True,
+            item_labels={3075: "Thornmail"},
+        )
+        self.assertIsNotNone(choice)
+        assert choice is not None
+        self.assertEqual(choice.item_id, 3075)
+        self.assertEqual(choice.name, "Thornmail")
+        self.assertIn("magic", choice.why)
+        self.assertIn("Maokai stacked magic resist", choice.why)
+        self.assertIn(choice.item_id, owned)
+
+    def test_open_slot_has_no_sell(self) -> None:
+        owned = {3075: 1, 3020: 1, 6655: 1, 6653: 1, 4646: 1, 3102: 1}
+        self.assertIsNone(
+            choose_sell(
+                owned,
+                self._magic_shop(),
+                _magic_threats(),
+                protected_ids=set(),
+                locked_ids=set(),
+                profile="Mage",
+                inventory_full=False,
+            )
+        )
+
+    def test_only_boots_are_never_sold(self) -> None:
+        items = self._magic_shop()
+        owned = {3075: 1, 3020: 1, 6655: 1, 6653: 1, 4646: 1, 3102: 1}
+        choice = choose_sell(
+            owned,
+            items,
+            _magic_threats(),
+            protected_ids=set(),
+            locked_ids={3075, 6655, 6653, 4646, 3102},
+            profile="Mage",
+            inventory_full=True,
+        )
+        self.assertIsNone(choice)
+
+    def test_orphan_component_is_sold_before_a_finished_item(self) -> None:
+        items = shop(
+            item(3035, "Last Whisper", 1450, tags=("ArmorPenetration",)),
+            item(3033, "Mortal Reminder", 3000, from_ids=(3035,), tags=("Damage", "ArmorPenetration")),
+            item(3036, "Lord Dominik's Regards", 3300, from_ids=(3035,), tags=("Damage", "ArmorPenetration")),
+            item(6694, "Serylda's Grudge", 3200, from_ids=(3035,), tags=("ArmorPenetration",)),
+            item(3075, "Thornmail", 2450, tags=("Health", "Armor")),
+            item(3020, "Sorcerer's Shoes", 1100, tags=("Boots",)),
+            item(6655, "Luden's Echo", 2750, tags=("SpellDamage",)),
+        )
+        owned = {3035: 1, 3033: 1, 3075: 1, 3020: 1, 6655: 1, 4646: 1}
+        items[4646] = item(4646, "Stormsurge", 2800, tags=("SpellDamage",))
+        bare = choose_sell(
+            owned,
+            items,
+            _magic_threats(),
+            protected_ids=set(),
+            locked_ids=set(),
+            profile="Mage",
+            inventory_full=True,
+        )
+        self.assertIsNotNone(bare)
+        assert bare is not None
+        self.assertEqual(bare.item_id, 3035)
+        self.assertIn("no longer builds", bare.why)
+        kept = choose_sell(
+            owned,
+            items,
+            _magic_threats(),
+            protected_ids={3035},
+            locked_ids=set(),
+            profile="Mage",
+            inventory_full=True,
+        )
+        self.assertIsNotNone(kept)
+        assert kept is not None
+        self.assertEqual(kept.item_id, 3033)
+        self.assertIn("attack damage", kept.why)
+        self.assertNotEqual(kept.item_id, 3035)
+        self.assertNotEqual(kept.item_id, 3020)
+        self.assertIn(kept.item_id, owned)
+
+    def test_weaker_duplicate_is_the_cheaper_copy(self) -> None:
+        items = shop(
+            item(6655, "Luden's Echo", 2600, tags=("SpellDamage",)),
+            item(4646, "Stormsurge", 3200, tags=("SpellDamage",)),
+            item(3020, "Sorcerer's Shoes", 1100, tags=("Boots",)),
+        )
+        choice = choose_sell(
+            {6655: 1, 4646: 1, 3020: 1},
+            items,
+            _magic_threats(),
+            protected_ids=set(),
+            locked_ids=set(),
+            profile="Mage",
+            inventory_full=True,
+        )
+        self.assertIsNotNone(choice)
+        assert choice is not None
+        self.assertEqual(choice.item_id, 6655)
+        self.assertIn("Stormsurge", choice.why)
+        self.assertNotEqual(choice.item_id, 3020)
+
+    def test_progress_toward_the_buy_is_not_sold(self) -> None:
+        items = shop(
+            item(3157, "Zhonya's Hourglass", 3250, from_ids=(1058,), tags=("Armor", "SpellDamage")),
+            item(1058, "Needlessly Large Rod", 1250, tags=("Damage",)),
+            item(3075, "Thornmail", 2450, tags=("Health", "Armor")),
+            item(3020, "Sorcerer's Shoes", 1100, tags=("Boots", "MagicPenetration")),
+            item(6655, "Luden's Echo", 2750, tags=("SpellDamage",)),
+            item(3102, "Banshee's Veil", 3000, tags=("SpellBlock", "SpellDamage")),
+            item(4646, "Stormsurge", 2800, tags=("SpellDamage",)),
+        )
+        owned = {1058: 1, 3075: 1, 3020: 1, 6655: 1, 3102: 1, 4646: 1}
+        enemies = [ZED, TALON, QIYANA, NAAFIRI, RENGAR]
+        buys = recommend(AHRI, enemies, owned, 400, items, inventory_full=True)
+        self.assertTrue(buys)
+        self.assertEqual(buys[0].completed_id, 3157)
+        self.assertNotEqual(buys[0].sell_id, 1058)
+        self.assertNotEqual(buys[0].sell_id, 3020)
+        self.assertNotEqual(buys[0].sell_id, 3075)
+        self.assertIn(buys[0].sell_id, owned)
+        self.assertTrue(all(buy.sell_name == "" for buy in buys[1:]))
+        open_slot = recommend(AHRI, enemies, owned, 400, items)
+        self.assertEqual(open_slot[0].sell_name, "")
+
+
+class SlotTests(unittest.TestCase):
+    def _catalog(self) -> DragonData:
+        return DragonData("test", [AHRI, ZED], shop(item(3157, "Zhonya's Hourglass", 3250)))
+
+    def _payload(self, slots: list[dict]) -> dict:
+        return {
+            "activePlayer": {"summonerName": "Sal", "currentGold": 100},
+            "allPlayers": [
+                {"summonerName": "Sal", "championName": "Ahri", "team": "ORDER", "items": slots},
+                {"summonerName": "a", "championName": "Zed", "team": "CHAOS", "items": []},
+            ],
+            "gameData": {"gameTime": 100, "gameMode": "CLASSIC"},
+        }
+
+    def test_trinket_slot_does_not_fill_the_inventory(self) -> None:
+        slots = [
+            {"itemID": 3157, "count": 1, "slot": index, "displayName": "Zhonya's Hourglass"}
+            for index in range(5)
+        ]
+        slots.append({"itemID": 3340, "count": 1, "slot": 6, "displayName": "Stealth Ward"})
+        game = parse_game(self._payload(slots), self._catalog())
+        self.assertIsNotNone(game)
+        assert game is not None
+        self.assertEqual(game.item_slots, 5)
+        self.assertNotIn(3340, game.owned)
+
+    def test_potion_fills_a_slot_and_is_not_an_owned_sell_item(self) -> None:
+        slots = [{"itemID": 3157, "count": 1, "slot": index} for index in range(5)]
+        slots.append({"itemID": 2003, "count": 1, "slot": 5, "consumable": True, "displayName": "Health Potion"})
+        game = parse_game(self._payload(slots), self._catalog())
+        assert game is not None
+        self.assertEqual(game.item_slots, 6)
+        self.assertNotIn(2003, game.owned)
+        self.assertEqual(game.owned[3157], 5)
+
+    def test_trinket_placed_in_an_item_slot_counts(self) -> None:
+        slots = [{"itemID": 3340, "count": 1, "slot": 2, "displayName": "Stealth Ward"}]
+        game = parse_game(self._payload(slots), self._catalog())
+        assert game is not None
+        self.assertEqual(game.item_slots, 1)
+        self.assertIn(3340, game.owned)
+
+    def test_a_stack_is_one_slot(self) -> None:
+        slots = [{"itemID": 1036, "count": 6, "slot": 0, "displayName": "Long Sword"}]
+        game = parse_game(self._payload(slots), self._catalog())
+        assert game is not None
+        self.assertEqual(game.item_slots, 1)
+        self.assertEqual(game.owned[1036], 6)
 
 
 if __name__ == "__main__":

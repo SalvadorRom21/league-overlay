@@ -458,13 +458,71 @@ class TeamBuildTests(unittest.TestCase):
         self.assertIn("It's Critical", view.ingame.detail_line)
         self.assertIn("Malzahar", view.ingame.champion_line)
 
-    def test_full_inventory_says_the_buy_replaces_an_item(self) -> None:
-        payload = game("KIWI")
-        payload["allPlayers"][0]["items"] = [
-            {"itemID": item_id, "count": 1} for item_id in (3031, 3036, 3072, 3042, 3094, 3158)
+    def _magic_payload(self, slots: list[dict]) -> dict:
+        payload = game("KIWI", gold=1276)
+        enemies = ["Xerath", "Ziggs", "Brand", "Xerath", "Ziggs"]
+        for player, name in zip(payload["allPlayers"][1:], enemies):
+            player["championName"] = name
+        payload["allPlayers"][1]["items"] = [
+            {"itemID": 3211, "count": 1, "displayName": "Spectre's Cowl"}
         ]
-        view, _interval = build_view(LiveResult("ok", payload), LcuResult.down(), bridge_catalog())
-        self.assertIn("Inventory is full", view.ingame.detail_line)
+        payload["allPlayers"][0]["items"] = slots
+        return payload
+
+    def _full_catalog(self) -> DragonData:
+        return bridge_catalog(
+            shop_item(3075, "Thornmail", 2450, tags=("Health", "Armor")),
+            shop_item(3020, "Sorcerer's Shoes", 1100, tags=("Boots", "MagicPenetration")),
+            shop_item(6655, "Luden's Echo", 2750, tags=("SpellDamage",)),
+            shop_item(6653, "Liandry's Torment", 3000, tags=("Health", "SpellDamage")),
+            shop_item(4646, "Stormsurge", 2800, tags=("SpellDamage", "MagicPenetration")),
+            shop_item(3102, "Banshee's Veil", 3000, tags=("SpellBlock", "SpellDamage")),
+            shop_item(3211, "Spectre's Cowl", 1250, tags=("Health", "SpellBlock")),
+        )
+
+    def test_full_mayhem_inventory_names_the_item_to_sell(self) -> None:
+        slots = [
+            {"itemID": 3075, "count": 1, "slot": 0, "displayName": "Thornmail"},
+            {"itemID": 3020, "count": 1, "slot": 1, "displayName": "Sorcerer's Shoes"},
+            {"itemID": 6655, "count": 1, "slot": 2, "displayName": "Luden's Echo"},
+            {"itemID": 6653, "count": 1, "slot": 3, "displayName": "Liandry's Torment"},
+            {"itemID": 4646, "count": 1, "slot": 4, "displayName": "Stormsurge"},
+            {"itemID": 3102, "count": 1, "slot": 5, "displayName": "Banshee's Veil"},
+        ]
+        view, _interval = build_view(
+            LiveResult("ok", self._magic_payload(slots)),
+            LcuResult.down(),
+            self._full_catalog(),
+        )
+        self.assertIn("ARAM: Mayhem", view.headline)
+        self.assertTrue(view.ingame.buys)
+        sell = view.ingame.buys[0].why.split("\n", 1)[0]
+        self.assertTrue(sell.startswith("Sell Thornmail for "))
+        self.assertIn("magic", sell)
+        self.assertIn("stacked magic resist", sell)
+        self.assertNotIn("Sorcerer's Shoes", sell)
+        self.assertIn("1276", view.ingame.champion_line)
+        self.assertRegex(view.ingame.buys[0].item_line, r"\d+g")
+        self.assertNotIn("Inventory is full", view.ingame.detail_line)
+        for buy in view.ingame.buys[1:]:
+            self.assertNotIn("Sell ", buy.why)
+
+    def test_open_slot_does_not_name_a_sell(self) -> None:
+        slots = [
+            {"itemID": 3020, "count": 1, "slot": 0, "displayName": "Sorcerer's Shoes"},
+            {"itemID": 6655, "count": 1, "slot": 1, "displayName": "Luden's Echo"},
+            {"itemID": 6653, "count": 1, "slot": 2, "displayName": "Liandry's Torment"},
+            {"itemID": 4646, "count": 1, "slot": 3, "displayName": "Stormsurge"},
+            {"itemID": 3102, "count": 1, "slot": 4, "displayName": "Banshee's Veil"},
+        ]
+        view, _interval = build_view(
+            LiveResult("ok", self._magic_payload(slots)),
+            LcuResult.down(),
+            self._full_catalog(),
+        )
+        self.assertTrue(view.ingame.buys)
+        for buy in view.ingame.buys:
+            self.assertNotIn("Sell ", buy.why)
 
 
 if __name__ == "__main__":

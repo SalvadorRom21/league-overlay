@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from league_overlay.model import Champion, Item
 from league_overlay.threats import HEAL_CHAMPS, Threats, build_profile, summarize
@@ -216,6 +216,16 @@ class Recommendation:
     why: str
     kind: str
     have: tuple[str, ...]
+    sell_id: int = 0
+    sell_name: str = ""
+    sell_why: str = ""
+
+
+@dataclass(frozen=True)
+class SellChoice:
+    item_id: int
+    name: str
+    why: str
 
 
 def _pool(owned: dict[int, int]) -> Counter[int]:
@@ -510,6 +520,315 @@ def _explain(rule: ItemRule, threats: Threats) -> str:
     return f"{rule.summary} - {'; '.join(bits)}"
 
 
+def _who(threats: object, *tags: str) -> str:
+    names = getattr(threats, "names", None) or {}
+    found: list[str] = []
+    for tag in tags:
+        for name in names.get(tag) or []:
+            text = str(name).strip()
+            if text and text not in found:
+                found.append(text)
+    if not found:
+        return ""
+    if len(found) == 1:
+        return found[0]
+    if len(found) == 2:
+        return f"{found[0]} and {found[1]}"
+    return f"{found[0]}, {found[1]}, and {found[2]}"
+
+
+def _from(names: str) -> str:
+    return f" from {names}" if names else ""
+
+
+def _against(names: str) -> str:
+    return f" against {names}" if names else ""
+
+
+def _direct_parents(items: dict[int, Item]) -> dict[int, tuple[int, ...]]:
+    parents: dict[int, list[int]] = {}
+    for meta in items.values():
+        for component in meta.from_ids:
+            parents.setdefault(int(component), []).append(meta.id)
+        if meta.special_recipe:
+            parents.setdefault(meta.special_recipe, []).append(meta.id)
+    return {item_id: tuple(ids) for item_id, ids in parents.items()}
+
+
+def _on_this_map(meta: Item, bridge: bool) -> bool:
+    if not meta.purchasable or not meta.in_store or meta.required_champion:
+        return False
+    if bridge:
+        return meta.howling_abyss
+    return meta.summoners_rift
+
+
+def _orphan_component(
+    item_id: int,
+    owned: dict[int, int],
+    items: dict[int, Item],
+    parents: dict[int, tuple[int, ...]],
+    bridge: bool,
+) -> bool:
+    """True when this component no longer finishes a legal item on this map."""
+    direct = parents.get(item_id) or ()
+    if not direct:
+        return False
+    on_map: list[int] = []
+    for parent_id in direct:
+        meta = items.get(parent_id)
+        if meta is not None and _on_this_map(meta, bridge):
+            on_map.append(parent_id)
+    if not on_map:
+        return True
+    rest = {key: value for key, value in owned.items() if key != item_id and value > 0}
+    for parent_id in on_map:
+        if not completion_blocked(parent_id, rest, items):
+            return False
+    return True
+
+
+def _only_boots(owned: dict[int, int], items: dict[int, Item]) -> set[int]:
+    found: list[int] = []
+    for item_id, count in owned.items():
+        if count <= 0:
+            continue
+        meta = items.get(item_id)
+        if meta is not None and "Boots" in meta.tags:
+            found.append(item_id)
+    if len(found) == 1:
+        return {found[0]}
+    return set()
+
+
+def _sell_role(meta: Item, heal: float) -> str:
+    tags = set(meta.tags)
+    if meta.id in GRIEVOUS_IDS and heal >= 1:
+        return "grievous"
+    if "Boots" in tags:
+        return "boots"
+    if "Armor" in tags and "SpellDamage" not in tags:
+        return "armor"
+    if "SpellBlock" in tags and "SpellDamage" not in tags:
+        return "mr"
+    if "MagicPenetration" in tags:
+        return "magicpen"
+    if "ArmorPenetration" in tags:
+        return "armorpen"
+    if "SpellDamage" in tags:
+        return "spell"
+    if "Damage" in tags or "CriticalStrike" in tags:
+        return "attack"
+    return "other"
+
+
+def _keep_score(
+    meta: Item,
+    threats: object,
+    *,
+    count: int,
+    profile: str,
+    bridge: bool,
+    orphan: bool,
+    mr_built: str,
+) -> tuple[float, str, bool]:
+    """Higher score means the item still matches the game and should stay."""
+    if orphan:
+        place = "on this bridge" if bridge else "in this game"
+        return -8.0, f"It no longer builds into an item you can finish {place}", True
+    tags = set(meta.tags)
+    ad = threats.value("ad") + 0.5 * threats.value("attack_speed")  # type: ignore[attr-defined]
+    ap = threats.value("ap")  # type: ignore[attr-defined]
+    heal = threats.value("heal")  # type: ignore[attr-defined]
+    tank = threats.value("tank")  # type: ignore[attr-defined]
+    magic_names = _who(threats, "ap")
+    physical_names = _who(threats, "ad", "attack_speed")
+    heal_names = _who(threats, "heal")
+    enemy = _who(threats, "ap", "ad", "heal", "tank")
+    score = 0.0
+    penalties: list[tuple[float, str]] = []
+    boots = "Boots" in tags
+    grievous_matters = meta.id in GRIEVOUS_IDS and heal >= 1
+    if "Armor" in tags and "SpellDamage" not in tags and not boots and not grievous_matters:
+        if ap >= ad + 0.75:
+            why = f"Their damage is magic{_from(magic_names)}"
+            if mr_built:
+                why += f", and {mr_built} stacked magic resist"
+            penalties.append((3.0, why))
+        else:
+            score += ad * 2.2
+    if "SpellBlock" in tags and "SpellDamage" not in tags and not boots:
+        if ad >= ap + 0.75 and ap < 1.25:
+            penalties.append((3.0, f"Their damage is physical{_from(physical_names)}"))
+        else:
+            score += ap * 2.2
+    if meta.id in GRIEVOUS_IDS:
+        if heal >= 1:
+            score += heal * 2.6
+            if "Armor" in tags and "SpellDamage" not in tags:
+                score += ad * 2.2
+        else:
+            penalties.append((1.5, f"Healing is not the threat{_from(heal_names)}"))
+    if "ArmorPenetration" in tags and tank < 0.8:
+        penalties.append((1.2, "They are not stacking armor"))
+    elif "ArmorPenetration" in tags:
+        score += tank * 1.3
+    if "MagicPenetration" in tags and threats.value("mr") < 0.5:  # type: ignore[attr-defined]
+        penalties.append((0.6, "Nobody has stacked magic resist"))
+    elif "MagicPenetration" in tags:
+        score += threats.value("mr") * 1.1  # type: ignore[attr-defined]
+    if "SpellDamage" in tags:
+        score += 1.4
+        if "Health" in tags:
+            score += tank * 0.7
+    if ("Damage" in tags or "CriticalStrike" in tags) and "SpellDamage" not in tags:
+        if profile in {"Mage", "Battlemage", "Support"}:
+            penalties.append((2.2, f"It is attack damage in a magic build{_against(enemy)}"))
+        else:
+            score += 1.3
+    if (
+        "SpellDamage" in tags
+        and "Damage" not in tags
+        and "Armor" not in tags
+        and "SpellBlock" not in tags
+        and profile in {"Marksman", "Fighter", "Assassin"}
+    ):
+        penalties.append((2.0, f"It is ability power in an attack-damage build{_against(enemy)}"))
+    if count > 1:
+        penalties.append((0.75, "A second copy adds less than the rest of this inventory"))
+    score -= sum(amount for amount, _why in penalties)
+    if not penalties:
+        return score, "", False
+    penalties.sort(key=lambda row: row[0], reverse=True)
+    return score, penalties[0][1], True
+
+
+def choose_sell(
+    owned: dict[int, int],
+    items: dict[int, Item],
+    threats: object,
+    *,
+    protected_ids: set[int],
+    locked_ids: set[int],
+    profile: str,
+    enemy_builds: tuple | list = (),
+    bridge: bool = False,
+    inventory_full: bool = False,
+    item_labels: dict[int, str] | None = None,
+) -> SellChoice | None:
+    """Owned item that least matches this game, or None when a slot is open.
+
+    Never returns the only boots, the buy being recommended, a one-off
+    component of that buy, or an item that is not in the inventory.
+    """
+    if not inventory_full:
+        return None
+    labels = item_labels or {}
+    locked = set(locked_ids) | _only_boots(owned, items)
+    parents = _direct_parents(items)
+    _totals, built, _line = item_pressure(enemy_builds, items)
+    mr_built = _who_list(built.get("mr") or [])
+    enemy = _who(threats, "ap", "ad", "heal", "tank")
+    heal = threats.value("heal")  # type: ignore[attr-defined]
+    rows: list[tuple[float, int, int, str, str, bool, str]] = []
+    for item_id, count in owned.items():
+        if count <= 0 or item_id in locked:
+            continue
+        if item_id in protected_ids and count <= 1:
+            continue
+        meta = items.get(item_id)
+        if meta is None:
+            continue
+        orphan = _orphan_component(item_id, owned, items, parents, bridge)
+        score, why, specific = _keep_score(
+            meta,
+            threats,
+            count=count,
+            profile=profile,
+            bridge=bridge,
+            orphan=orphan,
+            mr_built=mr_built,
+        )
+        label = labels.get(item_id) or meta.name
+        rows.append((score, meta.total, item_id, label, why, specific, _sell_role(meta, heal)))
+    if not rows:
+        return None
+    rows.sort(key=lambda row: (row[0], row[1], row[2]))
+    score, _total, item_id, label, why, specific, role = rows[0]
+    if owned.get(item_id, 0) <= 0:
+        return None
+    if not specific:
+        peers = [
+            row
+            for row in rows[1:]
+            if row[6] == role and row[2] != item_id and (row[0] > score or (row[0] == score and row[1] > _total))
+        ]
+        peers.sort(key=lambda row: (-row[0], -row[1]))
+        if peers and role == "spell" and peers[0][0] > score + 0.05:
+            why = f"{peers[0][3]} already covers magic damage{_against(enemy)}"
+        elif peers:
+            why = f"{peers[0][3]} already covers this job{_against(enemy)}"
+        else:
+            why = f"It adds the least{_against(enemy)}"
+    return SellChoice(item_id, label, why)
+
+
+def _who_list(names: list[str]) -> str:
+    found: list[str] = []
+    for name in names:
+        text = str(name).strip()
+        if text and text not in found:
+            found.append(text)
+    if not found:
+        return ""
+    if len(found) == 1:
+        return found[0]
+    if len(found) == 2:
+        return f"{found[0]} and {found[1]}"
+    return f"{found[0]}, {found[1]}, and {found[2]}"
+
+
+def sell_for_buy(
+    owned: dict[int, int],
+    items: dict[int, Item],
+    threats: object,
+    completed_id: int,
+    buy_id: int,
+    profile: str,
+    enemy_builds: tuple | list,
+    *,
+    bridge: bool,
+    inventory_full: bool,
+    item_labels: dict[int, str] | None = None,
+) -> SellChoice | None:
+    if not inventory_full:
+        return None
+    parts = component_ids(completed_id, items)
+    progress = {
+        item_id
+        for item_id, count in owned.items()
+        if count > 0 and item_id in parts and item_id != completed_id
+    }
+    return choose_sell(
+        owned,
+        items,
+        threats,
+        protected_ids=progress,
+        locked_ids={completed_id, buy_id},
+        profile=profile,
+        enemy_builds=enemy_builds,
+        bridge=bridge,
+        inventory_full=True,
+        item_labels=item_labels,
+    )
+
+
+def _with_sell(rec: Recommendation, sell: SellChoice | None) -> Recommendation:
+    if sell is None:
+        return rec
+    return replace(rec, sell_id=sell.item_id, sell_name=sell.name, sell_why=sell.why)
+
+
 def recommend(
     champion: Champion,
     enemies: list[Champion],
@@ -518,6 +837,8 @@ def recommend(
     items: dict[int, Item],
     enemy_builds: tuple[tuple[str, tuple[int, ...]], ...] | list = (),
     limit: int = 2,
+    inventory_full: bool = False,
+    item_labels: dict[int, str] | None = None,
 ) -> list[Recommendation]:
     """Up to `limit` buy paths, best counter first."""
     threats = summarize(enemies)
@@ -559,22 +880,37 @@ def recommend(
         if buy is None or completed is None:
             continue
         short = 0 if gold >= cost else max(1, math.ceil(cost - gold))
-        picks.append(
-            Recommendation(
-                completed_id=completed.id,
-                completed_name=completed.name,
-                completed_total=completed.total,
-                buy_id=buy.id,
-                buy_name=buy.name,
-                cost=cost,
-                combine=combine,
-                affordable=gold >= cost,
-                gold_short=short,
-                why=_explain(rule, threats),
-                kind=rule.kind,
-                have=_owned_names(completed.id, owned, items),
-            )
+        rec = Recommendation(
+            completed_id=completed.id,
+            completed_name=completed.name,
+            completed_total=completed.total,
+            buy_id=buy.id,
+            buy_name=buy.name,
+            cost=cost,
+            combine=combine,
+            affordable=gold >= cost,
+            gold_short=short,
+            why=_explain(rule, threats),
+            kind=rule.kind,
+            have=_owned_names(completed.id, owned, items),
         )
+        if inventory_full and not picks:
+            rec = _with_sell(
+                rec,
+                sell_for_buy(
+                    owned,
+                    items,
+                    threats,
+                    completed.id,
+                    buy.id,
+                    profile,
+                    enemy_builds,
+                    bridge=False,
+                    inventory_full=True,
+                    item_labels=item_labels,
+                ),
+            )
+        picks.append(rec)
         seen_kinds.add(rule.kind)
         if len(picks) >= limit:
             break

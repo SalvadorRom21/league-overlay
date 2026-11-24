@@ -48,6 +48,8 @@ class ParsedGame:
     enemy_augment_ids: tuple[int, ...] = ()
     enemy_builds: tuple[tuple[str, tuple[int, ...]], ...] = ()
     game_id: int = 0
+    item_slots: int = 0
+    item_labels: dict[int, str] = field(default_factory=dict)
 
 
 def fetch_live(timeout: float = 0.6) -> LiveResult:
@@ -157,20 +159,43 @@ def _collect_augments(payload: object) -> tuple[list[str], list[int], bool]:
     return found, ids, exposed
 
 
-def _owned(player: dict, catalog: DragonData) -> tuple[dict[int, int], list[str]]:
+def _slot_index(slot: dict) -> int | None:
+    raw = slot.get("slot")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _trinket_slot(slot: dict, item_id: int) -> bool:
+    """The trinket slot is not an item slot unless the client put it in one."""
+    index = _slot_index(slot)
+    if index is not None and index >= 6:
+        return True
+    if index is None and item_id in TRINKETS:
+        return True
+    return False
+
+
+def _owned(player: dict, catalog: DragonData) -> tuple[dict[int, int], list[str], int, dict[int, str]]:
     counts: dict[int, int] = {}
     names: list[str] = []
+    labels: dict[int, str] = {}
+    slots = 0
     for slot in player.get("items") or []:
         if not isinstance(slot, dict):
-            continue
-        if slot.get("consumable"):
             continue
         try:
             item_id = int(slot.get("itemID") or 0)
             count = int(slot.get("count") or 1)
         except (TypeError, ValueError):
             continue
-        if item_id <= 0 or item_id in TRINKETS or count <= 0:
+        if item_id <= 0 or count <= 0 or _trinket_slot(slot, item_id):
+            continue
+        slots += 1
+        if slot.get("consumable"):
             continue
         counts[item_id] = counts.get(item_id, 0) + count
         label = str(slot.get("displayName") or "")
@@ -178,8 +203,9 @@ def _owned(player: dict, catalog: DragonData) -> tuple[dict[int, int], list[str]
             meta = catalog.items.get(item_id)
             label = meta.name if meta is not None else ""
         if label:
+            labels[item_id] = label
             names.append(label if count == 1 else f"{label} x{count}")
-    return counts, names
+    return counts, names, slots, labels
 
 
 def parse_game(data: dict, catalog: DragonData) -> ParsedGame | None:
@@ -238,7 +264,7 @@ def parse_game(data: dict, catalog: DragonData) -> ParsedGame | None:
         enemy_labels.append(enemy_name)
         if resolved is not None:
             enemies.append(resolved)
-        counts, _item_names = _owned(player, catalog)
+        counts, _item_names, _slots, _labels = _owned(player, catalog)
         enemy_builds.append((enemy_name, tuple(counts)))
         names, ids, _seen = _collect_augments(player)
         for aug_name in names:
@@ -247,7 +273,7 @@ def parse_game(data: dict, catalog: DragonData) -> ParsedGame | None:
         for aug_id in ids:
             if aug_id not in enemy_ids:
                 enemy_ids.append(aug_id)
-    owned, item_names = _owned(me, catalog)
+    owned, item_names, item_slots, item_labels = _owned(me, catalog)
     player_augments, player_ids, player_exposed = _collect_augments(me)
     active_augments, active_ids, active_exposed = _collect_augments(active)
     augments: list[str] = []
@@ -281,4 +307,6 @@ def parse_game(data: dict, catalog: DragonData) -> ParsedGame | None:
         enemy_augment_ids=tuple(enemy_ids),
         enemy_builds=tuple(enemy_builds),
         game_id=game_id,
+        item_slots=item_slots,
+        item_labels=item_labels,
     )

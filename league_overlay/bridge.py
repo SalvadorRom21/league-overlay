@@ -18,9 +18,11 @@ from league_overlay.items import (
     _grievous_allow,
     _owned_names,
     _owns_boots,
+    _with_sell,
     absorb_pressure,
     completion_blocked,
     next_purchase,
+    sell_for_buy,
 )
 from league_overlay.model import Champion, Item
 from league_overlay.threats import (
@@ -432,6 +434,8 @@ def recommend_bridge(
     augments_exposed: bool = False,
     mention_augments: bool = False,
     limit: int = 2,
+    inventory_full: bool = False,
+    item_labels: dict[int, str] | None = None,
 ) -> BridgeBuyResult:
     threats = bridge_threats(enemies, enemy_augment_text or enemy_augments)
     building = absorb_pressure(threats, enemy_builds, items)
@@ -490,22 +494,37 @@ def recommend_bridge(
         if buy is None or completed is None:
             continue
         short = 0 if gold >= cost else max(1, int(cost - gold + 0.999))
-        buys.append(
-            Recommendation(
-                completed_id=completed.id,
-                completed_name=completed.name,
-                completed_total=completed.total,
-                buy_id=buy.id,
-                buy_name=buy.name,
-                cost=cost,
-                combine=bool(completed.from_ids) and buy_id != completed.id,
-                affordable=gold >= cost,
-                gold_short=short,
-                why=_explain(rule, threats),
-                kind=rule.kind,
-                have=_owned_names(completed.id, owned, items),
-            )
+        rec = Recommendation(
+            completed_id=completed.id,
+            completed_name=completed.name,
+            completed_total=completed.total,
+            buy_id=buy.id,
+            buy_name=buy.name,
+            cost=cost,
+            combine=bool(completed.from_ids) and buy_id != completed.id,
+            affordable=gold >= cost,
+            gold_short=short,
+            why=_explain(rule, threats),
+            kind=rule.kind,
+            have=_owned_names(completed.id, owned, items),
         )
+        if inventory_full and not buys:
+            rec = _with_sell(
+                rec,
+                sell_for_buy(
+                    owned,
+                    items,
+                    threats,
+                    completed.id,
+                    buy.id,
+                    profile,
+                    enemy_builds,
+                    bridge=True,
+                    inventory_full=True,
+                    item_labels=item_labels,
+                ),
+            )
+        buys.append(rec)
         seen.add(rule.kind)
         if len(buys) >= limit:
             break

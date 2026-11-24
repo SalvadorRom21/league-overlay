@@ -71,7 +71,11 @@ def _buy_view(rec: Recommendation, index: int) -> BuyView:
         into_line = f"→ {rec.completed_name} · {rec.completed_total}g"
     if rec.have:
         into_line += " · have " + ", ".join(rec.have[:3])
-    return BuyView("NEXT" if index == 0 else "ALSO", item_line, into_line, rec.why, rec.affordable)
+    why = rec.why
+    if rec.sell_name:
+        sell = f"Sell {rec.sell_name} for {rec.completed_name}. {rec.sell_why}"
+        why = f"{sell}\n{rec.why}" if rec.why else sell
+    return BuyView("NEXT" if index == 0 else "ALSO", item_line, into_line, why, rec.affordable)
 
 
 def _champion_line(game: ParsedGame) -> str:
@@ -110,21 +114,6 @@ def _detected(live: LiveResult, lcu: LcuResult) -> ModeInfo:
         queue_id=queue,
         bridge_select=bridge_select,
     )
-
-
-def _full_inventory(owned: dict[int, int]) -> str:
-    filled = sum(count for count in owned.values() if count > 0)
-    if filled >= 6:
-        return "Inventory is full. This buy replaces an item."
-    return ""
-
-
-def _with_full(detail: str, full: str) -> str:
-    if not full:
-        return detail
-    if not detail:
-        return full
-    return f"{detail}\n{full}"
 
 
 def _resolved_augments(
@@ -184,7 +173,7 @@ def _ingame_panel(
             items_line,
         )
     yours, your_text, enemy_names, enemy_text = _resolved_augments(augments, game, lcu.board)
-    full = _full_inventory(game.owned)
+    full = game.item_slots >= 6
     detail = ""
     if mode.bridge:
         early = (game.level > 0 and game.level <= 4) or (game.level <= 0 and 0 < game.seconds < 240)
@@ -203,10 +192,12 @@ def _ingame_panel(
             enemy_builds=game.enemy_builds,
             augments_exposed=game.augments_exposed or bool(yours),
             mention_augments=mode.kind in {"mayhem", "aram-unconfirmed"},
+            inventory_full=full,
+            item_labels=game.item_labels,
         )
         advice = list(result.buys)
         threat = result.threat_line
-        detail = _with_full(result.detail, full)
+        detail = result.detail
         empty = "No fountain buy stands out for this bridge."
     else:
         advice = recommend(
@@ -216,8 +207,10 @@ def _ingame_panel(
             game.gold,
             catalog.items,
             enemy_builds=game.enemy_builds,
+            inventory_full=full,
+            item_labels=game.item_labels,
         )
-        detail = _with_full(enemy_build_line(game.enemy_builds, catalog.items), full)
+        detail = enemy_build_line(game.enemy_builds, catalog.items)
         empty = "No counter buy stands out for this team."
     if not advice:
         return InGamePanel(
@@ -403,6 +396,7 @@ def _saved_panel(
     if you is None or not catalog.ready:
         detail = match_detail(yours, enemy_names, exposed=True, building=enemy_build_line(builds, catalog.items))
         return InGamePanel(True, "", your_label, enemy_line, "", items_line, detail)
+    full = local is not None and len(local.items) >= 6
     if mode.bridge:
         result = recommend_bridge(
             you,
@@ -418,6 +412,7 @@ def _saved_panel(
             enemy_builds=builds,
             augments_exposed=True,
             mention_augments=True,
+            inventory_full=full,
         )
         return InGamePanel(
             True,
@@ -429,7 +424,15 @@ def _saved_panel(
             result.detail,
             tuple(_buy_view(rec, index) for index, rec in enumerate(result.buys)),
         )
-    advice = recommend(you, enemies, owned, 0, catalog.items, enemy_builds=builds)
+    advice = recommend(
+        you,
+        enemies,
+        owned,
+        0,
+        catalog.items,
+        enemy_builds=builds,
+        inventory_full=full,
+    )
     detail = match_detail(
         yours,
         enemy_names,
