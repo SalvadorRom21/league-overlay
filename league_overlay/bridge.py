@@ -14,15 +14,15 @@ from dataclasses import dataclass
 from league_overlay.augments import flags_from_text
 from league_overlay.catalog import DragonData
 from league_overlay.items import (
+    PLAN_FLOOR,
     Recommendation,
+    ScoredBuy,
     _grievous_allow,
-    _owned_names,
     _owns_boots,
-    _with_sell,
     absorb_pressure,
+    buys_for_plan,
     completion_blocked,
-    next_purchase,
-    sell_for_buy,
+    select_plan,
 )
 from league_overlay.model import Champion, Item
 from league_overlay.threats import (
@@ -34,7 +34,6 @@ from league_overlay.threats import (
     tank_value,
 )
 
-MIN_SCORE = 1.6
 # A bridge champion below this, with enemies already showing and rerolls left,
 # is a weak lock. The bench is preferred when it scores higher.
 REROLL_BELOW = 6.5
@@ -203,6 +202,11 @@ RULES: tuple[BridgeRule, ...] = (
         base=3.4,
         mayhem_only=True,
     ),
+    BridgeRule(3089, AP, (), "capstone", "Ability power for a slot the threats do not already fill", base=0.9),
+    BridgeRule(3031, frozenset({"Marksman"}), (), "crit", "Critical strike for a slot the threats do not already fill", base=0.9),
+    BridgeRule(3094, frozenset({"Marksman"}), (("attack_speed", 0.35),), "zeal", "Attack speed once the fight is answered", base=0.75),
+    BridgeRule(3046, frozenset({"Marksman"}), (("attack_speed", 0.3),), "dancer", "A second attack-speed item for the last slot", base=0.7),
+    BridgeRule(3074, AD_BRUISER, (), "cleave", "Damage and healing for a fighter's last slot", base=0.8),
 )
 
 
@@ -211,6 +215,8 @@ class BridgeBuyResult:
     buys: tuple[Recommendation, ...]
     threat_line: str
     detail: str
+    plan: tuple[str, ...] = ()
+    complete: bool = False
 
 
 @dataclass(frozen=True)
@@ -449,7 +455,7 @@ def recommend_bridge(
     skipped_grievous = False
     boots_owned = _owns_boots(owned, items)
     item_count = sum(count for count in owned.values() if count > 0)
-    scored: list[tuple[float, int, BridgeRule]] = []
+    scored: list[ScoredBuy] = []
     for rule in RULES:
         if profile not in rule.profiles:
             continue
@@ -466,9 +472,10 @@ def recommend_bridge(
         if rule.item_id == 124011 and champion.id not in HEAL_CHAMPS and profile != "Support":
             continue
         meta = items.get(rule.item_id)
-        if not _on_bridge_shop(meta, items):
+        if not _on_bridge_shop(meta, items) or meta is None:
             continue
-        if completion_blocked(rule.item_id, owned, items):
+        owned_this = owned.get(rule.item_id, 0) > 0
+        if not owned_this and completion_blocked(rule.item_id, owned, items):
             continue
         score = rule.base + sum(threats.value(tag) * weight for tag, weight in rule.weights)
         if rule.kind == "shields":
@@ -477,61 +484,28 @@ def recommend_bridge(
             score *= BOOTS_FACTOR
         if rule.item_id == 3065 and (champion.id in HEAL_CHAMPS or "heal" in flags):
             score += 2.2
-        if score < MIN_SCORE:
-            continue
         if rule.kind == "grievous" and "grievous" in flags:
             skipped_grievous = True
             continue
-        scored.append((score, rule.item_id, rule))
-    scored.sort(key=lambda row: (-row[0], row[1]))
-    buys: list[Recommendation] = []
-    seen: set[str] = set()
-    for _score, _item_id, rule in scored:
-        if rule.kind in seen:
+        floor = 0.0 if rule.kind == "boots" else PLAN_FLOOR
+        if score < floor:
             continue
-        step = next_purchase(rule.item_id, owned, gold, items)
-        if step is None:
-            continue
-        buy_id, cost, _combine = step
-        buy = items.get(buy_id)
-        completed = items.get(rule.item_id)
-        if buy is None or completed is None:
-            continue
-        short = 0 if gold >= cost else max(1, int(cost - gold + 0.999))
-        rec = Recommendation(
-            completed_id=completed.id,
-            completed_name=completed.name,
-            completed_total=completed.total,
-            buy_id=buy.id,
-            buy_name=buy.name,
-            cost=cost,
-            combine=bool(completed.from_ids) and buy_id != completed.id,
-            affordable=gold >= cost,
-            gold_short=short,
-            why=_explain(rule, threats),
-            kind=rule.kind,
-            have=_owned_names(completed.id, owned, items),
-        )
-        if inventory_full and not buys:
-            rec = _with_sell(
-                rec,
-                sell_for_buy(
-                    owned,
-                    items,
-                    threats,
-                    completed.id,
-                    buy.id,
-                    profile,
-                    enemy_builds,
-                    bridge=True,
-                    inventory_full=True,
-                    item_labels=item_labels,
-                ),
-            )
-        buys.append(rec)
-        seen.add(rule.kind)
-        if len(buys) >= limit:
-            break
+        scored.append(ScoredBuy(score, rule.item_id, rule.kind, meta.name, rule))
+    plan = select_plan(scored, owned, items)
+    buys = buys_for_plan(
+        plan,
+        owned,
+        gold,
+        items,
+        threats,
+        profile,
+        enemy_builds,
+        bridge=True,
+        inventory_full=inventory_full,
+        item_labels=item_labels,
+        limit=limit,
+        explain=lambda rule: _explain(rule, threats),
+    )
     detail = ""
     if mention_augments or building:
         detail = match_detail(
@@ -544,7 +518,14 @@ def recommend_bridge(
             cards=cards,
             absent=absent,
         )
-    return BridgeBuyResult(tuple(buys), threat_line(threats), detail)
+    complete = bool(plan) and all(owned.get(row.item_id, 0) > 0 for row in plan)
+    return BridgeBuyResult(
+        tuple(buys),
+        threat_line(threats),
+        detail,
+        tuple(row.name for row in plan),
+        complete,
+    )
 
 
 def _provides(champ: Champion) -> dict[str, float]:

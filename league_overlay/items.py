@@ -16,6 +16,10 @@ from league_overlay.model import Champion, Item
 from league_overlay.threats import HEAL_CHAMPS, Threats, build_profile, summarize
 
 MIN_SCORE = 1.6
+# The last slots of a six-item plan can sit under the counter cutoff.
+# They still have to score, so a component with no finished item never fills a slot.
+PLAN_FLOOR = 0.55
+PLAN_SLOTS = 6
 
 GRIEVOUS_IDS = {3075, 3033, 6609, 3165}
 # Owning a component locks the shop path onto the item that builds from it.
@@ -56,6 +60,7 @@ class ItemRule:
     weights: tuple[tuple[str, float], ...]
     kind: str
     summary: str
+    base: float = 0.0
 
 
 RULES: tuple[ItemRule, ...] = (
@@ -199,6 +204,11 @@ RULES: tuple[ItemRule, ...] = (
         "A team shield with armor and magic resist",
     ),
     ItemRule(3109, TANKS, (("ad", 1.0), ("burst", 0.35)), "armor", "Armor that links to an ally"),
+    ItemRule(3089, AP, (), "capstone", "Ability power for a slot the threats do not already fill", 0.9),
+    ItemRule(3031, frozenset({"Marksman"}), (), "crit", "Critical strike for a slot the threats do not already fill", 0.9),
+    ItemRule(3094, frozenset({"Marksman"}), (("attack_speed", 0.35),), "zeal", "Attack speed once the fight is answered", 0.75),
+    ItemRule(3046, frozenset({"Marksman"}), (("attack_speed", 0.3),), "dancer", "A second attack-speed item for the last slot", 0.7),
+    ItemRule(3074, AD_BRUISER, (), "cleave", "Damage and healing for a fighter's last slot", 0.8),
 )
 
 
@@ -800,6 +810,7 @@ def sell_for_buy(
     bridge: bool,
     inventory_full: bool,
     item_labels: dict[int, str] | None = None,
+    keep_ids: set[int] | None = None,
 ) -> SellChoice | None:
     if not inventory_full:
         return None
@@ -809,12 +820,15 @@ def sell_for_buy(
         for item_id, count in owned.items()
         if count > 0 and item_id in parts and item_id != completed_id
     }
+    locked = {completed_id, buy_id}
+    if keep_ids:
+        locked |= set(keep_ids)
     return choose_sell(
         owned,
         items,
         threats,
         protected_ids=progress,
-        locked_ids={completed_id, buy_id},
+        locked_ids=locked,
         profile=profile,
         enemy_builds=enemy_builds,
         bridge=bridge,
@@ -829,57 +843,184 @@ def _with_sell(rec: Recommendation, sell: SellChoice | None) -> Recommendation:
     return replace(rec, sell_id=sell.item_id, sell_name=sell.name, sell_why=sell.why)
 
 
-def recommend(
-    champion: Champion,
-    enemies: list[Champion],
+@dataclass(frozen=True)
+class ScoredBuy:
+    score: float
+    item_id: int
+    kind: str
+    name: str
+    rule: object
+
+
+@dataclass(frozen=True)
+class ShopAdvice:
+    buys: tuple[Recommendation, ...]
+    plan: tuple[str, ...]
+    complete: bool
+
+
+def _finished_boots_id(owned: dict[int, int], items: dict[int, Item]) -> int:
+    for item_id, count in owned.items():
+        if count <= 0 or item_id == BASIC_BOOTS_ID:
+            continue
+        meta = items.get(item_id)
+        if meta is not None and "Boots" in meta.tags:
+            return item_id
+    return 0
+
+
+def _conflicts(item_id: int, chosen_ids: list[int], items: dict[int, Item]) -> bool:
+    keys = unique_keys(item_id, items)
+    if not keys:
+        return False
+    parts = component_ids(item_id, items)
+    for other in chosen_ids:
+        if other == item_id or other in parts:
+            continue
+        if unique_keys(other, items) & keys:
+            return True
+    return False
+
+
+def _in_progress(item_id: int, owned: dict[int, int], items: dict[int, Item]) -> bool:
+    if owned.get(item_id, 0) > 0:
+        return False
+    parts = component_ids(item_id, items)
+    return any(owned.get(part, 0) > 0 and part != item_id for part in parts)
+
+
+def select_plan(
+    scored: list[ScoredBuy],
+    owned: dict[int, int],
+    items: dict[int, Item],
+) -> list[ScoredBuy]:
+    """Up to six finished items, boots included, that can sit in one inventory."""
+    by_id = {row.item_id: row for row in scored}
+    chosen: list[ScoredBuy] = []
+    chosen_ids: list[int] = []
+
+    def add(row: ScoredBuy) -> None:
+        chosen.append(row)
+        chosen_ids.append(row.item_id)
+
+    boots_id = _finished_boots_id(owned, items)
+    if boots_id:
+        row = by_id.get(boots_id)
+        if row is None:
+            meta = items.get(boots_id)
+            row = ScoredBuy(0.0, boots_id, "boots", meta.name if meta is not None else "Boots", None)
+        add(row)
+    else:
+        boots = [
+            row
+            for row in scored
+            if row.kind == "boots" and row.score > 0 and not completion_blocked(row.item_id, owned, items)
+        ]
+        boots.sort(key=lambda row: (-row.score, row.item_id))
+        if boots:
+            add(boots[0])
+
+    def usable(row: ScoredBuy, same_kind: bool) -> bool:
+        if row.item_id in chosen_ids or row.kind == "boots":
+            return False
+        if row.score < PLAN_FLOOR:
+            return False
+        if owned.get(row.item_id, 0) <= 0 and completion_blocked(row.item_id, owned, items):
+            return False
+        if _conflicts(row.item_id, chosen_ids, items):
+            return False
+        if not same_kind and any(other.kind == row.kind for other in chosen):
+            return False
+        return True
+
+    ordered = sorted(scored, key=lambda row: (-row.score, row.item_id))
+    owned_rows = [row for row in ordered if owned.get(row.item_id, 0) > 0]
+    new_rows = [row for row in ordered if owned.get(row.item_id, 0) <= 0]
+
+    def fill(rows: list[ScoredBuy]) -> None:
+        for same_kind in (False, True):
+            for row in rows:
+                if len(chosen) >= PLAN_SLOTS:
+                    return
+                if usable(row, same_kind):
+                    add(row)
+
+    # Items already in the inventory keep their slots when they still fit.
+    # Empty slots are then the best missing answers, not a second copy of a job he has.
+    fill(owned_rows)
+    fill(new_rows)
+    return chosen
+
+
+def _order_buys(
+    unfinished: list[ScoredBuy],
+    owned: dict[int, int],
+    items: dict[int, Item],
+    limit: int,
+) -> list[ScoredBuy]:
+    """Highest counters first, one job at a time, then a repeat job if a slot is still open."""
+    started = [row for row in unfinished if _in_progress(row.item_id, owned, items)]
+    started.sort(key=lambda row: (-row.score, row.item_id))
+    waiting = [row for row in unfinished if row.item_id not in {item.item_id for item in started}]
+    waiting.sort(key=lambda row: (-row.score, row.item_id))
+    picked: list[ScoredBuy] = list(started)
+    seen = {row.kind for row in picked}
+    deferred: list[ScoredBuy] = []
+    for row in waiting:
+        if len(picked) >= limit:
+            break
+        if row.kind in seen:
+            deferred.append(row)
+            continue
+        seen.add(row.kind)
+        picked.append(row)
+    for row in deferred:
+        if len(picked) >= limit:
+            break
+        picked.append(row)
+    return picked[:limit]
+
+
+def buys_for_plan(
+    plan: list[ScoredBuy],
     owned: dict[int, int],
     gold: float,
     items: dict[int, Item],
-    enemy_builds: tuple[tuple[str, tuple[int, ...]], ...] | list = (),
-    limit: int = 2,
-    inventory_full: bool = False,
-    item_labels: dict[int, str] | None = None,
+    threats: object,
+    profile: str,
+    enemy_builds: tuple | list,
+    *,
+    bridge: bool,
+    inventory_full: bool,
+    item_labels: dict[int, str] | None,
+    limit: int,
+    explain,
 ) -> list[Recommendation]:
-    """Up to `limit` buy paths, best counter first."""
-    threats = summarize(enemies)
-    absorb_pressure(threats, enemy_builds, items)
-    profile = build_profile(champion)
-    grievous_allow = _grievous_allow(owned)
-    boots_owned = _owns_boots(owned, items)
-    scored: list[tuple[float, int, ItemRule]] = []
-    for rule in RULES:
-        if profile not in rule.profiles:
-            continue
-        if rule.kind == "boots" and boots_owned:
-            continue
-        if rule.kind == "grievous" and grievous_allow is not None and rule.item_id not in grievous_allow:
-            continue
-        meta = items.get(rule.item_id)
-        if not _shop_item(meta):
-            continue
-        if completion_blocked(rule.item_id, owned, items):
-            continue
-        score = sum(threats.value(tag) * weight for tag, weight in rule.weights)
-        if rule.item_id == 3065 and champion.id in HEAL_CHAMPS and threats.ap >= 1:
-            score += 1.8
-        if score < MIN_SCORE:
-            continue
-        scored.append((score, rule.item_id, rule))
-    scored.sort(key=lambda row: (-row[0], row[1]))
+    unfinished = [
+        row
+        for row in plan
+        if row.rule is not None
+        and owned.get(row.item_id, 0) <= 0
+        and not completion_blocked(row.item_id, owned, items)
+    ]
     picks: list[Recommendation] = []
-    seen_kinds: set[str] = set()
-    for _score, _item_id, rule in scored:
-        if rule.kind in seen_kinds:
-            continue
-        step = next_purchase(rule.item_id, owned, gold, items)
+    keep = {row.item_id for row in plan}
+    for row in _order_buys(unfinished, owned, items, limit):
+        step = next_purchase(row.item_id, owned, gold, items)
         if step is None:
             continue
         buy_id, cost, combine = step
         buy = items.get(buy_id)
-        completed = items.get(rule.item_id)
+        completed = items.get(row.item_id)
         if buy is None or completed is None:
             continue
         short = 0 if gold >= cost else max(1, math.ceil(cost - gold))
+        why = explain(row.rule)
+        started = _in_progress(row.item_id, owned, items)
+        if not picks and started:
+            why = f"Finish {completed.name}. {why}".strip()
+        elif not picks and not inventory_full:
+            why = f"Open slot: {completed.name}. {why}".strip()
         rec = Recommendation(
             completed_id=completed.id,
             completed_name=completed.name,
@@ -890,8 +1031,8 @@ def recommend(
             combine=combine,
             affordable=gold >= cost,
             gold_short=short,
-            why=_explain(rule, threats),
-            kind=rule.kind,
+            why=why,
+            kind=row.kind,
             have=_owned_names(completed.id, owned, items),
         )
         if inventory_full and not picks:
@@ -905,13 +1046,95 @@ def recommend(
                     buy.id,
                     profile,
                     enemy_builds,
-                    bridge=False,
+                    bridge=bridge,
                     inventory_full=True,
                     item_labels=item_labels,
+                    keep_ids=keep,
                 ),
             )
         picks.append(rec)
-        seen_kinds.add(rule.kind)
-        if len(picks) >= limit:
-            break
     return picks
+
+
+def advise(
+    champion: Champion,
+    enemies: list[Champion],
+    owned: dict[int, int],
+    gold: float,
+    items: dict[int, Item],
+    enemy_builds: tuple[tuple[str, tuple[int, ...]], ...] | list = (),
+    limit: int = 2,
+    inventory_full: bool = False,
+    item_labels: dict[int, str] | None = None,
+) -> ShopAdvice:
+    """The six-item plan, and the next buys that finish it."""
+    threats = summarize(enemies)
+    absorb_pressure(threats, enemy_builds, items)
+    profile = build_profile(champion)
+    grievous_allow = _grievous_allow(owned)
+    boots_owned = _owns_boots(owned, items)
+    scored: list[ScoredBuy] = []
+    for rule in RULES:
+        if profile not in rule.profiles:
+            continue
+        if rule.kind == "boots" and boots_owned:
+            continue
+        if rule.kind == "grievous" and grievous_allow is not None and rule.item_id not in grievous_allow:
+            continue
+        meta = items.get(rule.item_id)
+        if not _shop_item(meta) or meta is None:
+            continue
+        owned_this = owned.get(rule.item_id, 0) > 0
+        if not owned_this and completion_blocked(rule.item_id, owned, items):
+            continue
+        score = rule.base + sum(threats.value(tag) * weight for tag, weight in rule.weights)
+        if rule.item_id == 3065 and champion.id in HEAL_CHAMPS and threats.ap >= 1:
+            score += 1.8
+        floor = 0.0 if rule.kind == "boots" else PLAN_FLOOR
+        if score < floor:
+            continue
+        scored.append(ScoredBuy(score, rule.item_id, rule.kind, meta.name, rule))
+    plan = select_plan(scored, owned, items)
+    buys = buys_for_plan(
+        plan,
+        owned,
+        gold,
+        items,
+        threats,
+        profile,
+        enemy_builds,
+        bridge=False,
+        inventory_full=inventory_full,
+        item_labels=item_labels,
+        limit=limit,
+        explain=lambda rule: _explain(rule, threats),
+    )
+    complete = bool(plan) and all(owned.get(row.item_id, 0) > 0 for row in plan)
+    return ShopAdvice(tuple(buys), tuple(row.name for row in plan), complete)
+
+
+def recommend(
+    champion: Champion,
+    enemies: list[Champion],
+    owned: dict[int, int],
+    gold: float,
+    items: dict[int, Item],
+    enemy_builds: tuple[tuple[str, tuple[int, ...]], ...] | list = (),
+    limit: int = 2,
+    inventory_full: bool = False,
+    item_labels: dict[int, str] | None = None,
+) -> list[Recommendation]:
+    """Up to `limit` buy paths, best counter first."""
+    return list(
+        advise(
+            champion,
+            enemies,
+            owned,
+            gold,
+            items,
+            enemy_builds,
+            limit,
+            inventory_full,
+            item_labels,
+        ).buys
+    )

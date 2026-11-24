@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from league_overlay.augments import AugmentBook, names_from_screen, resolve_augments
 from league_overlay.bridge import match_detail, recommend_bridge, suggest_bridge
 from league_overlay.catalog import DragonData
-from league_overlay.items import Recommendation, enemy_build_line, recommend
+from league_overlay.items import Recommendation, advise, enemy_build_line, recommend
 from league_overlay.lcu import ChampSelect, LcuResult, MatchBoard
 from league_overlay.live import LiveResult, ParsedGame, parse_game
 from league_overlay.modeinfo import ModeInfo, detect_mode
@@ -61,6 +61,26 @@ class OverlayView:
     warning: str = ""
     ingame: InGamePanel = field(default_factory=lambda: InGamePanel(False, "No active game."))
     picks: PickPanel = field(default_factory=lambda: PickPanel(False, "Champion select is unavailable."))
+
+
+def _slot_line(names: list[str], slots: int) -> str:
+    body = "Items: " + ", ".join(names) if names else "Items: empty"
+    return f"{body} · {slots} of 6 slots"
+
+
+def _with_plan(detail: str, plan: tuple[str, ...]) -> str:
+    if not plan:
+        return detail
+    line = "Plan: " + ", ".join(plan)
+    return f"{detail}\n{line}" if detail else line
+
+
+def _empty_buy(base: str, plan: tuple[str, ...], complete: bool, slots: int) -> str:
+    if complete and len(plan) >= 6 and slots >= 6:
+        return "All six slots are filled."
+    if complete:
+        return "No other finished item fits this match."
+    return base
 
 
 def _buy_view(rec: Recommendation, index: int) -> BuyView:
@@ -171,7 +191,7 @@ def _ingame_panel(
     champion_line = _champion_line(game)
     enemy_line = "vs " + ", ".join(game.enemy_labels) if game.enemy_labels else "No enemies in this game."
     threat = threat_line(summarize(game.enemies)) if game.enemies else "No enemy champions read yet."
-    items_line = "Items: " + ", ".join(game.item_names) if game.item_names else "Items: empty"
+    items_line = _slot_line(game.item_names, game.item_slots)
     if not catalog.ready:
         return InGamePanel(
             True,
@@ -198,6 +218,8 @@ def _ingame_panel(
         cards = tuple(names_from_screen(augments, screen.cards)[0])
     full = game.item_slots >= 6
     detail = ""
+    plan: tuple[str, ...] = ()
+    complete = False
     if mode.bridge:
         early = (game.level > 0 and game.level <= 4) or (game.level <= 0 and 0 < game.seconds < 240)
         result = recommend_bridge(
@@ -222,9 +244,11 @@ def _ingame_panel(
         advice = list(result.buys)
         threat = result.threat_line
         detail = result.detail
+        plan = result.plan
+        complete = result.complete
         empty = "No fountain buy stands out for this bridge."
     else:
-        advice = recommend(
+        shop = advise(
             game.champion,
             game.enemies,
             game.owned,
@@ -234,12 +258,16 @@ def _ingame_panel(
             inventory_full=full,
             item_labels=game.item_labels,
         )
+        advice = list(shop.buys)
+        plan = shop.plan
+        complete = shop.complete
         detail = enemy_build_line(game.enemy_builds, catalog.items)
         empty = "No counter buy stands out for this team."
+    detail = _with_plan(detail, plan)
     if not advice:
         return InGamePanel(
             True,
-            empty,
+            _empty_buy(empty, plan, complete, game.item_slots),
             champion_line,
             enemy_line,
             threat,

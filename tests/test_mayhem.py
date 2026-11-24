@@ -523,6 +523,44 @@ class TeamBuildTests(unittest.TestCase):
         self.assertTrue(view.ingame.buys)
         for buy in view.ingame.buys:
             self.assertNotIn("Sell ", buy.why)
+        self.assertIn("5 of 6 slots", view.ingame.items_line)
+        self.assertIn("Sorcerer's Shoes", view.ingame.items_line)
+        self.assertIn("Plan:", view.ingame.detail_line)
+        self.assertIn("Sorcerer's Shoes", view.ingame.detail_line)
+        self.assertTrue(view.ingame.buys[0].why.startswith("Open slot:"))
+        planned = view.ingame.buys[0].why.split(".", 1)[0].replace("Open slot: ", "")
+        self.assertIn(planned, view.ingame.detail_line)
+
+    def test_a_component_in_a_slot_is_finished(self) -> None:
+        catalog = bridge_catalog(
+            shop_item(1058, "Needlessly Large Rod", 1250),
+            shop_item(3157, "Zhonya's Hourglass", 3250, from_ids=(1058,)),
+        )
+        payload = game("KIWI")
+        payload["allPlayers"][0]["items"] = [
+            {"itemID": 1058, "count": 1, "slot": 0, "displayName": "Needlessly Large Rod"}
+        ]
+        view, _interval = build_view(LiveResult("ok", payload), LcuResult.down(), catalog)
+        self.assertIn("1 of 6 slots", view.ingame.items_line)
+        self.assertTrue(view.ingame.buys)
+        self.assertIn("Zhonya", view.ingame.buys[0].why)
+        self.assertTrue(view.ingame.buys[0].why.startswith("Finish "))
+        self.assertNotIn("Sell ", view.ingame.buys[0].why)
+
+    def test_trinket_is_not_a_sixth_slot_and_boots_are(self) -> None:
+        slots = [
+            {"itemID": 3020, "count": 1, "slot": 0, "displayName": "Sorcerer's Shoes"},
+            {"itemID": 3340, "count": 1, "slot": 6, "displayName": "Stealth Ward"},
+        ]
+        view, _interval = build_view(
+            LiveResult("ok", self._magic_payload(slots)),
+            LcuResult.down(),
+            self._full_catalog(),
+        )
+        self.assertIn("1 of 6 slots", view.ingame.items_line)
+        self.assertNotIn("Stealth Ward", view.ingame.items_line)
+        self.assertIn("Plan:", view.ingame.detail_line)
+        self.assertIn("Sorcerer's Shoes", view.ingame.detail_line)
 
 
 if __name__ == "__main__":
