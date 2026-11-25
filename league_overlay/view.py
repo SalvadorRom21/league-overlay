@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from league_overlay.augments import AugmentBook, names_from_screen, resolve_augments
 from league_overlay.bridge import match_detail, recommend_bridge, suggest_bridge
 from league_overlay.catalog import DragonData
-from league_overlay.items import Recommendation, advise, enemy_build_line
+from league_overlay.items import Recommendation, advise, boots_sell_line, enemy_build_line
 from league_overlay.lcu import ChampSelect, LcuResult, MatchBoard
 from league_overlay.live import TRINKETS, LiveResult, ParsedGame, parse_game
 from league_overlay.modeinfo import ModeInfo, detect_mode
@@ -68,13 +68,19 @@ def _slot_line(names: list[str], slots: int) -> str:
     return f"{body} · {slots} of 6 slots"
 
 
-def _with_plan(detail: str, plan: tuple[str, ...], focus: str = "") -> str:
-    if not plan:
+def _with_plan(detail: str, plan: tuple[str, ...], focus: str = "", boots_line: str = "") -> str:
+    if not plan and not boots_line:
         return detail
-    line = "Plan: " + ", ".join(plan)
-    if focus:
-        line = f"Plan: {focus} — " + ", ".join(plan)
-    return f"{detail}\n{line}" if detail else line
+    lines: list[str] = []
+    if plan:
+        line = "Plan: " + ", ".join(plan)
+        if focus:
+            line = f"Plan: {focus} — " + ", ".join(plan)
+        lines.append(line)
+    if boots_line:
+        lines.append(boots_line)
+    body = "\n".join(lines)
+    return f"{detail}\n{body}" if detail else body
 
 
 def _empty_buy(base: str, plan: tuple[str, ...], complete: bool, slots: int) -> str:
@@ -222,6 +228,8 @@ def _ingame_panel(
     detail = ""
     plan: tuple[str, ...] = ()
     complete = False
+    focus = ""
+    boots_line = ""
     if mode.bridge:
         early = (game.level > 0 and game.level <= 4) or (game.level <= 0 and 0 < game.seconds < 240)
         result = recommend_bridge(
@@ -249,6 +257,7 @@ def _ingame_panel(
         plan = result.plan
         complete = result.complete
         focus = result.focus
+        boots_line = boots_sell_line(result.boots_sell)
         empty = "No fountain buy stands out for this bridge."
     else:
         shop = advise(
@@ -265,9 +274,10 @@ def _ingame_panel(
         plan = shop.plan
         complete = shop.complete
         focus = shop.focus
+        boots_line = boots_sell_line(shop.boots_sell)
         detail = enemy_build_line(game.enemy_builds, catalog.items)
         empty = "No counter buy stands out for this team."
-    detail = _with_plan(detail, plan, focus)
+    detail = _with_plan(detail, plan, focus, boots_line)
     if not advice:
         return InGamePanel(
             True,
@@ -474,7 +484,7 @@ def _saved_panel(
             inventory_full=full,
         )
         advice = list(result.buys)
-        detail = _with_plan(result.detail, result.plan, result.focus)
+        detail = _with_plan(result.detail, result.plan, result.focus, boots_sell_line(result.boots_sell))
         message = "" if advice else _empty_buy("No fountain buy stands out for this bridge.", result.plan, result.complete, slots)
         return InGamePanel(
             True,
@@ -504,6 +514,7 @@ def _saved_panel(
         ),
         shop.plan,
         shop.focus,
+        boots_sell_line(shop.boots_sell),
     )
     threat = threat_line(summarize(enemies)) if enemies else ""
     advice = list(shop.buys)

@@ -19,6 +19,8 @@ MIN_SCORE = 1.6
 # The last slots of a six-item plan can sit under the counter cutoff.
 # They still have to score, so a component with no finished item never fills a slot.
 PLAN_FLOOR = 0.55
+# Spare gold with the other five items finished. The boots swap waits for that moment.
+HIGH_BOOT_GOLD = 2500
 PLAN_SLOTS = 6
 # Slots held for items his kit actually scales. The rest answer the enemy team.
 CORE_SLOTS = 3
@@ -1018,11 +1020,130 @@ class ScoredBuy:
 
 
 @dataclass(frozen=True)
+class BootsSell:
+    """One finished item bought by selling the boots he already owns."""
+
+    item_name: str
+    boot_name: str
+    boot_id: int
+    ready: bool
+    buy: Recommendation | None = None
+
+
+@dataclass(frozen=True)
 class ShopAdvice:
     buys: tuple[Recommendation, ...]
     plan: tuple[str, ...]
     complete: bool
     focus: str = ""
+    boots_sell: BootsSell | None = None
+
+
+def boots_sell_line(option: BootsSell | None) -> str:
+    """The panel line for the boots swap. Empty until he owns a finished pair."""
+    if option is None:
+        return ""
+    when = "now" if option.ready else "later"
+    return f"Boots-sell {when}: {option.item_name}. Sell {option.boot_name}."
+
+
+def _row_is_boots(row: ScoredBuy, items: dict[int, Item]) -> bool:
+    if row.kind == "boots":
+        return True
+    meta = items.get(row.item_id)
+    return meta is not None and "Boots" in meta.tags
+
+
+def choose_boots_sell(
+    scored: list[ScoredBuy],
+    plan: list[ScoredBuy],
+    owned: dict[int, int],
+    gold: float,
+    items: dict[int, Item],
+    *,
+    inventory_full: bool,
+    explain,
+    kit: Kit | None,
+) -> BootsSell | None:
+    """The late item his boots can become, shown as soon as the pair is owned.
+
+    The next buy stays on the six-slot plan until that plan's other items are
+    finished. Full build and high gold are that same moment: the five are in
+    the inventory and the gold is sitting there.
+    """
+    boot_id = _finished_boots_id(owned, items)
+    boot = items.get(boot_id) if boot_id else None
+    if boot is None:
+        return None
+    plan_ids = {row.item_id for row in plan}
+    best: ScoredBuy | None = None
+    for row in scored:
+        if _row_is_boots(row, items) or row.item_id in plan_ids:
+            continue
+        if owned.get(row.item_id, 0) > 0 or row.kind == "starter":
+            continue
+        if getattr(row.rule, "early_only", False):
+            continue
+        if completion_blocked(row.item_id, owned, items):
+            continue
+        if best is None or (row.score, -row.item_id) > (best.score, -best.item_id):
+            best = row
+    if best is None:
+        return None
+    non_boots = [row for row in plan if not _row_is_boots(row, items)]
+    five_done = bool(non_boots) and all(owned.get(row.item_id, 0) > 0 for row in non_boots)
+    full_build = inventory_full and five_done
+    high_gold = gold >= HIGH_BOOT_GOLD and five_done
+    ready = five_done or full_build or high_gold
+    buy: Recommendation | None = None
+    if ready:
+        step = next_purchase(best.item_id, owned, gold, items)
+        buy_meta = items.get(step[0]) if step is not None else None
+        completed = items.get(best.item_id)
+        if step is None or buy_meta is None or completed is None:
+            return None
+        buy_id, cost, combine = step
+        why = explain(best.rule) if best.rule is not None else completed.name
+        if kit is not None:
+            why = f"{why.rstrip('.')}. Fits {kit_focus(kit)}."
+        why = f"Boots-sell option. {why}"
+        if full_build and high_gold:
+            sell_why = "Full build and high gold. The other five planned items are finished."
+        elif full_build:
+            sell_why = "Full build. The other five planned items are finished."
+        elif high_gold:
+            sell_why = "High gold. The other five planned items are finished."
+        else:
+            sell_why = "The other five planned items are finished."
+        short = 0 if gold >= cost else max(1, math.ceil(cost - gold))
+        buy = _with_sell(
+            Recommendation(
+                completed_id=completed.id,
+                completed_name=completed.name,
+                completed_total=completed.total,
+                buy_id=buy_meta.id,
+                buy_name=buy_meta.name,
+                cost=cost,
+                combine=combine,
+                affordable=gold >= cost,
+                gold_short=short,
+                why=why,
+                kind=best.kind,
+                have=_owned_names(completed.id, owned, items),
+            ),
+            SellChoice(boot.id, boot.name, sell_why),
+        )
+    return BootsSell(best.name, boot.name, boot.id, ready, buy)
+
+
+def _apply_boots_sell(
+    buys: list[Recommendation],
+    option: BootsSell | None,
+    limit: int,
+) -> list[Recommendation]:
+    if option is None or option.buy is None:
+        return buys
+    return [option.buy, *buys][:limit]
 
 
 def _finished_boots_id(owned: dict[int, int], items: dict[int, Item]) -> int:
@@ -1364,8 +1485,19 @@ def advise(
         explain=lambda rule: _explain(rule, threats),
         kit=kit,
     )
+    option = choose_boots_sell(
+        scored,
+        plan,
+        owned,
+        gold,
+        items,
+        inventory_full=inventory_full,
+        explain=lambda rule: _explain(rule, threats),
+        kit=kit,
+    )
+    buys = _apply_boots_sell(buys, option, limit)
     complete = bool(plan) and all(owned.get(row.item_id, 0) > 0 for row in plan)
-    return ShopAdvice(tuple(buys), tuple(row.name for row in plan), complete, kit_focus(kit))
+    return ShopAdvice(tuple(buys), tuple(row.name for row in plan), complete, kit_focus(kit), option)
 
 
 def recommend(

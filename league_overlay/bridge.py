@@ -15,6 +15,7 @@ from league_overlay.augments import flags_from_text
 from league_overlay.catalog import DragonData
 from league_overlay.items import (
     PLAN_FLOOR,
+    BootsSell,
     Recommendation,
     ScoredBuy,
     _grievous_allow,
@@ -26,6 +27,8 @@ from league_overlay.items import (
     item_fits_kit,
     select_plan,
     tune_rule,
+    choose_boots_sell,
+    _apply_boots_sell,
 )
 from league_overlay.model import Champion, Item
 from league_overlay.threats import (
@@ -255,6 +258,7 @@ class BridgeBuyResult:
     plan: tuple[str, ...] = ()
     complete: bool = False
     focus: str = ""
+    boots_sell: BootsSell | None = None
 
 
 @dataclass(frozen=True)
@@ -539,6 +543,17 @@ def recommend_bridge(
         explain=lambda rule: _explain(rule, threats),
         kit=kit,
     )
+    option = choose_boots_sell(
+        scored,
+        plan,
+        owned,
+        gold,
+        items,
+        inventory_full=inventory_full,
+        explain=lambda rule: _explain(rule, threats),
+        kit=kit,
+    )
+    buys = _apply_boots_sell(buys, option, limit)
     detail = ""
     if mention_augments or building:
         detail = match_detail(
@@ -559,6 +574,7 @@ def recommend_bridge(
         tuple(row.name for row in plan),
         complete,
         kit_focus(kit),
+        option,
     )
 
 

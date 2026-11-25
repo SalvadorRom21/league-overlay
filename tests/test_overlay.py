@@ -16,6 +16,7 @@ from league_overlay.items import (
     frontier_buys,
     next_purchase,
     recommend,
+    boots_sell_line,
 )
 from league_overlay.lcu import ChampSelect, LcuResult, parse_lockfile, parse_session
 from league_overlay.live import LiveResult, match_player, parse_game
@@ -389,6 +390,49 @@ class ItemTests(unittest.TestCase):
         self.assertNotEqual(marksman.buys[0].completed_name, "Plated Steelcaps")
         self.assertIn("Riftmaker", battle.plan)
         self.assertNotIn("Rod of Ages", battle.plan)
+
+    def test_boots_sell_waits_until_the_other_five_are_finished(self) -> None:
+        items = shop(
+            item(3047, "Plated Steelcaps", 1200, tags=("Armor", "Boots"), abyss=True),
+            item(3031, "Infinity Edge", 3500, tags=("Damage", "CriticalStrike"), abyss=True),
+            item(6676, "The Collector", 3000, tags=("Damage", "CriticalStrike", "ArmorPenetration"), abyss=True),
+            item(3072, "Bloodthirster", 3400, tags=("Damage", "LifeSteal"), abyss=True),
+            item(3508, "Essence Reaver", 3100, tags=("Damage", "CriticalStrike", "AbilityHaste"), abyss=True),
+            item(3033, "Mortal Reminder", 3000, tags=("Damage", "ArmorPenetration"), abyss=True),
+            item(3036, "Lord Dominik's Regards", 3300, tags=("Damage", "ArmorPenetration"), abyss=True),
+            item(6673, "Immortal Shieldbow", 3000, tags=("Damage", "CriticalStrike"), abyss=True),
+            item(1036, "Long Sword", 350, tags=("Damage",), abyss=True),
+        )
+        jhin = champ(202, "Jhin", "Jhin", ["Marksman", "Mage"], 10, 6, 2)
+        enemies = [JINX, ZED, SYNDRA, MALPHITE, SORAKA]
+        bare = recommend_bridge(jhin, enemies, {}, 800, items, mayhem_shop=True)
+        self.assertIsNone(bare.boots_sell)
+        self.assertIn("Plated Steelcaps", bare.plan)
+        early = recommend_bridge(jhin, enemies, {3047: 1}, 4000, items, mayhem_shop=True)
+        assert early.boots_sell is not None
+        self.assertFalse(early.boots_sell.ready)
+        self.assertEqual(len(early.plan), 6)
+        self.assertIn("Plated Steelcaps", early.plan)
+        self.assertNotIn(early.boots_sell.item_name, early.plan)
+        self.assertNotIn("Boots", early.boots_sell.item_name)
+        self.assertNotEqual(early.boots_sell.item_name, "Plated Steelcaps")
+        self.assertIn("later", boots_sell_line(early.boots_sell))
+        self.assertIn("Plated Steelcaps", boots_sell_line(early.boots_sell))
+        self.assertNotEqual(early.buys[0].sell_name, "Plated Steelcaps")
+        self.assertNotEqual(early.buys[0].completed_name, early.boots_sell.item_name)
+        by_name = {meta.name: meta.id for meta in items.values()}
+        owned = {by_name[name]: 1 for name in early.plan}
+        late = recommend_bridge(
+            jhin, enemies, owned, 400, items, mayhem_shop=True, inventory_full=True
+        )
+        assert late.boots_sell is not None
+        self.assertTrue(late.boots_sell.ready)
+        self.assertIn("Plated Steelcaps", late.plan)
+        self.assertEqual(late.buys[0].sell_name, "Plated Steelcaps")
+        self.assertEqual(late.buys[0].completed_name, late.boots_sell.item_name)
+        self.assertNotIn(late.boots_sell.item_name, late.plan)
+        self.assertIn("now", boots_sell_line(late.boots_sell))
+        self.assertIn("Boots-sell option", late.buys[0].why)
 
     def test_tank_plan_stays_defensive_against_squishy_mages(self) -> None:
         items = shop(
