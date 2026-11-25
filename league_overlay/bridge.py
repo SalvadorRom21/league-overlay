@@ -207,6 +207,7 @@ RULES: tuple[BridgeRule, ...] = (
     ),
     BridgeRule(3089, AP, (), "capstone", "Ability power for spells", base=1.85, job="core"),
     BridgeRule(4645, AP, (), "core", "Ability power and magic penetration for spells", base=1.6, job="core"),
+    BridgeRule(4629, frozenset({"Mage", "Battlemage"}), (), "core", "Ability power and ability haste for spells", base=1.15, job="core"),
     BridgeRule(4646, frozenset({"Mage", "Battlemage"}), (), "core", "Ability power burst for a mage", base=1.5, job="core"),
     BridgeRule(4633, frozenset({"Battlemage"}), (), "core", "Ability power and health for a battlemage", base=1.7, job="core"),
     BridgeRule(3031, frozenset({"Marksman", "Fighter"}), (), "crit", "Critical strike for auto attacks", base=1.85, job="core"),

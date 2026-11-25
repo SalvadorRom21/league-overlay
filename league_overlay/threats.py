@@ -37,7 +37,6 @@ ENCHANTERS = frozenset(
     {
         "Ivern",
         "Janna",
-        "Karma",
         "Lulu",
         "Milio",
         "Nami",
@@ -211,8 +210,8 @@ class Kit:
 def champion_kit(champ: Champion) -> Kit:
     """The build this champion uses before the enemy team changes the details."""
     profile = build_profile(champ)
-    if champ.id in ENCHANTERS or profile == "Support":
-        return Kit(profile, "ap", "spell", "Enchanter")
+    if champ.id in ENCHANTERS:
+        return Kit(profile, "ap", "spell", "Enchanter", FOCUS_OVERRIDE.get(champ.id, ""))
     if profile == "Tank":
         return Kit(profile, "tank", "both", "Tank")
     kind = damage_type(champ)
@@ -235,6 +234,8 @@ def champion_kit(champ: Champion) -> Kit:
 # Jhin's attack speed is locked, and the bonus becomes a little attack damage.
 STAT_PREFS: dict[str, dict[str, float]] = {
     "Jhin": {"crit": 1.8, "ad": 1.1, "lethality": 1.35, "attack_speed": 0.4, "lifesteal": 0.65},
+    "Zilean": {"ap": 1.2, "haste": 1.5},
+    "Karma": {"ap": 1.2, "haste": 1.25},
     "Graves": {"crit": 1.25, "ad": 1.15, "lethality": 1.3, "attack_speed": 0.45},
     "Ezreal": {"crit": 0.45, "attack_speed": 0.5, "ad": 1.15, "lethality": 0.8},
     "Kalista": {"attack_speed": 1.4, "crit": 0.75, "lethality": 0.55},
@@ -245,6 +246,13 @@ FOCUS_OVERRIDE = {
     "Graves": "attack damage and crit between reloads",
     "Ezreal": "attack damage and ability haste on spell casts",
     "Kalista": "attack speed on spears",
+    "Zilean": "ability power and ability haste on bombs. The rewind does not scale with heal power",
+    "Karma": "ability power on mantra",
+    "Heimerdinger": "ability power on turrets",
+    "Taliyah": "ability power on rocks",
+    "Morgana": "ability power on the pool and the binding",
+    "Bard": "ability power on meeps",
+    "Rakan": "ability power on the engage",
 }
 
 
@@ -270,6 +278,9 @@ def champion_factor(champ_id: str, tags: set[str]) -> float:
         factor *= prefs.get("ad", 1.0)
     if "SpellDamage" in tags:
         factor *= prefs.get("ap", 1.0)
+    haste = ("AbilityHaste" in tags or "CooldownReduction" in tags) and "Boots" not in tags
+    if haste:
+        factor *= prefs.get("haste", 1.0)
     return factor
 
 
@@ -307,9 +318,8 @@ def build_profile(champ: Champion) -> str:
     if kind == "ap" and "Fighter" in tags:
         return "Battlemage"
     if kind == "ap" and "Mage" in tags and "Support" in tags:
-        if champ.defense <= 4 and champ.magic >= 8:
-            return "Mage"
-        return "Support"
+        # The Support tag is the lane. Bombs, turrets, and pools still spend gold on ability power.
+        return "Mage"
     if kind == "ap" and "Mage" in tags:
         return "Mage"
     if "Assassin" in tags and ("Fighter" not in tags or champ.defense <= 3):
@@ -319,6 +329,8 @@ def build_profile(champ: Champion) -> str:
     if "Tank" in tags:
         return "Tank"
     if "Support" in tags:
+        if damage_type(champ) == "ap":
+            return "Mage"
         return "Support"
     if "Mage" in tags:
         return "Mage"

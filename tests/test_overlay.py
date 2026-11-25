@@ -23,7 +23,7 @@ from league_overlay.threats import Threats
 from league_overlay.model import Champion, Item
 from league_overlay.picks import suggest
 from league_overlay.roles import roles_for
-from league_overlay.threats import build_profile, damage_type, summarize
+from league_overlay.threats import build_profile, champion_kit, damage_type, summarize
 from league_overlay.view import ACTIVE_INTERVAL, IDLE_INTERVAL, build_view
 from league_overlay.winutil import WS_EX_LAYERED, WS_EX_TRANSPARENT, style_with_clickthrough
 
@@ -246,6 +246,51 @@ class ItemTests(unittest.TestCase):
         self.assertIn("The Collector", bridge.plan)
         self.assertNotIn("Phantom Dancer", bridge.plan)
         self.assertIn(bridge.buys[0].completed_name, {"Infinity Edge", "The Collector"})
+
+    def test_a_support_tag_does_not_make_a_damage_mage_an_enchanter(self) -> None:
+        mages = (
+            champ(26, "Zilean", "Zilean", ["Support", "Mage"], 2, 8, 5),
+            champ(74, "Heimerdinger", "Heimerdinger", ["Mage", "Support"], 2, 8, 6),
+            champ(163, "Taliyah", "Taliyah", ["Mage", "Support"], 1, 8, 7),
+            champ(25, "Morgana", "Morgana", ["Support", "Mage"], 1, 8, 6),
+            champ(43, "Karma", "Karma", ["Mage", "Support"], 1, 8, 7),
+            champ(497, "Rakan", "Rakan", ["Support"], 2, 8, 4),
+            champ(432, "Bard", "Bard", ["Support", "Mage"], 4, 5, 4),
+        )
+        for mage in mages:
+            self.assertEqual(build_profile(mage), "Mage", mage.name)
+            self.assertEqual(champion_kit(mage).role, "Mage", mage.name)
+        self.assertEqual(champion_kit(SORAKA).role, "Enchanter")
+        self.assertEqual(champion_kit(YUUMI).role, "Enchanter")
+        zilean = mages[0]
+        items = shop(
+            item(6617, "Moonstone Renewer", 2200, tags=("Health", "SpellDamage"), abyss=True),
+            item(3107, "Redemption", 2300, tags=("Health",), abyss=True),
+            item(6616, "Staff of Flowing Water", 2250, tags=("SpellDamage", "AbilityHaste"), abyss=True),
+            item(3089, "Rabadon's Deathcap", 3500, tags=("SpellDamage",), abyss=True),
+            item(6655, "Luden's Echo", 2750, tags=("SpellDamage", "AbilityHaste", "CooldownReduction"), abyss=True),
+            item(4629, "Cosmic Drive", 3000, tags=("Health", "SpellDamage", "AbilityHaste"), abyss=True),
+            item(3157, "Zhonya's Hourglass", 3250, tags=("Armor", "SpellDamage"), abyss=True),
+            item(3165, "Morellonomicon", 2950, tags=("Health", "SpellDamage", "AbilityHaste"), abyss=True),
+            item(3047, "Plated Steelcaps", 1200, tags=("Armor", "Boots"), abyss=True),
+            item(3020, "Sorcerer's Shoes", 1100, tags=("Boots", "MagicPenetration"), abyss=True),
+            item(4005, "Imperial Mandate", 2300, tags=("SpellDamage", "ManaRegen", "AbilityHaste"), abyss=True),
+        )
+        enemies = [JINX, ZED, SYNDRA, ORIANNA, MALPHITE]
+        result = advise(zilean, enemies, {}, 4000, items)
+        for name in ("Moonstone Renewer", "Redemption", "Staff of Flowing Water"):
+            self.assertNotIn(name, result.plan)
+        self.assertIn("Rabadon's Deathcap", result.plan)
+        self.assertIn("Luden's Echo", result.plan)
+        self.assertIn("bombs", result.focus)
+        bridge = recommend_bridge(zilean, enemies, {}, 4000, items, mayhem_shop=True)
+        self.assertNotIn("Moonstone Renewer", bridge.plan)
+        self.assertIn("Rabadon's Deathcap", bridge.plan)
+        self.assertIn("Luden's Echo", bridge.plan)
+        owned = {3157: 1, 3107: 1, 6616: 1, 6617: 1, 3165: 1, 4005: 1}
+        full = recommend_bridge(zilean, enemies, owned, 0, items, mayhem_shop=True, inventory_full=True)
+        self.assertIn(full.buys[0].sell_name, {"Moonstone Renewer", "Redemption", "Staff of Flowing Water", "Imperial Mandate"})
+        self.assertIn("does not fit", full.buys[0].sell_why)
 
     def test_tank_plan_stays_defensive_against_squishy_mages(self) -> None:
         items = shop(

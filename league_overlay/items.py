@@ -213,6 +213,7 @@ RULES: tuple[ItemRule, ...] = (
     ItemRule(3089, AP, (), "capstone", "Ability power for spells", 1.85, "core"),
     ItemRule(6655, frozenset({"Mage", "Battlemage"}), (("burst", 0.35),), "poke", "Ability power that procs on spells", 1.75, "core"),
     ItemRule(4645, AP, (), "core", "Ability power and magic penetration for spells", 1.6, "core"),
+    ItemRule(4629, frozenset({"Mage", "Battlemage"}), (), "core", "Ability power and ability haste for spells", 1.15, "core"),
     ItemRule(4646, frozenset({"Mage", "Battlemage"}), (), "core", "Ability power burst for a mage", 1.5, "core"),
     ItemRule(4633, frozenset({"Battlemage"}), (), "core", "Ability power and health for a battlemage", 1.7, "core"),
     ItemRule(3031, frozenset({"Marksman", "Fighter"}), (), "crit", "Critical strike for auto attacks", 1.85, "core"),
@@ -428,6 +429,8 @@ def completion_blocked(
 _AUTO_DAMAGE = {3031, 3094, 3046, 3072, 6672, 6673, 3085}
 # Finished items an enchanter can actually use. Damage legendaries are not on this list.
 _ENCHANTER_ITEMS = {6617, 3222, 3107, 3504, 6616, 2065, 3190, 3157, 3102, 3165, 124011}
+# Heal and shield power. Spell-damage tags on these do not make them a mage item.
+_HEAL_POWER_ITEMS = {6617, 3222, 3107, 3504, 6616, 2065, 4005, 6620, 6621, 124011}
 
 
 def _boots_fit(tags: set[str], kit: Kit) -> bool:
@@ -458,6 +461,8 @@ def item_fits_kit(meta: Item, kind: str, kit: Kit) -> bool:
         return _boots_fit(tags, kit)
     if kit.role == "Enchanter":
         return meta.id in _ENCHANTER_ITEMS
+    if meta.id in _HEAL_POWER_ITEMS:
+        return False
     if meta.id == 3039 and kit.damage == "tank":
         return True
     ad_item = ("Damage" in tags or "CriticalStrike" in tags or "ArmorPenetration" in tags) and "SpellDamage" not in tags
