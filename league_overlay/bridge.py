@@ -44,6 +44,12 @@ from league_overlay.threats import (
 # is a weak lock. The bench is preferred when it scores higher.
 REROLL_BELOW = 6.5
 BOOTS_FACTOR = 0.3
+# Four of the six slots stay on items that deal damage in the fight that is already happening.
+# One slot is boots. One answers the enemy team.
+BRIDGE_CORE_SLOTS = 4
+# Rod of Ages spends the first fights stacking.
+ROD_OF_AGES = 6657
+RUNAANS = 3085
 
 # Artillery that Data Dragon does not already mark as a marksman or a squishy mage.
 POKE_EXTRA = frozenset({"Jayce", "Kennen", "Zoe"})
@@ -213,8 +219,9 @@ RULES: tuple[BridgeRule, ...] = (
     BridgeRule(4633, frozenset({"Battlemage"}), (), "core", "Ability power and health for a battlemage", base=1.7, job="core"),
     BridgeRule(3031, frozenset({"Marksman", "Fighter"}), (), "crit", "Critical strike for auto attacks", base=1.85, job="core"),
     BridgeRule(6676, frozenset({"Marksman"}), (), "core", "Critical strike and an execute for a marksman", base=1.45, job="core"),
-    BridgeRule(3094, frozenset({"Marksman", "Fighter"}), (("attack_speed", 0.35),), "zeal", "Attack speed for auto attacks", base=1.6, job="core"),
-    BridgeRule(3046, frozenset({"Marksman", "Fighter"}), (("attack_speed", 0.3),), "dancer", "A second attack-speed item for auto attacks", base=1.45, job="core"),
+    BridgeRule(3094, frozenset({"Marksman", "Fighter"}), (("attack_speed", 0.35),), "zeal", "Attack speed and range for the fight on one lane", base=1.6, job="core"),
+    BridgeRule(3085, frozenset({"Marksman"}), (), "group", "Attacks also hit the champions stacked on the bridge", base=1.7, job="core"),
+    BridgeRule(3046, frozenset({"Marksman", "Fighter"}), (("attack_speed", 0.15),), "dancer", "A single-target attack-speed item", base=0.2),
     BridgeRule(3072, frozenset({"Marksman", "Fighter"}), (("poke", 0.85),), "lifesteal", "Lifesteal between health relics. You do not recall to heal", base=1.55, job="core"),
     BridgeRule(6672, frozenset({"Marksman", "Fighter"}), (("attack_speed", 0.25),), "core", "Attack damage and attack speed for auto attacks", base=1.5, job="core"),
     BridgeRule(3142, frozenset({"Assassin"}), (), "core", "Lethality for an assassin's abilities", base=1.7, job="core"),
@@ -474,6 +481,8 @@ def recommend_bridge(
             continue
         if rule.kind == "boots" and not kit.boots:
             continue
+        if rule.item_id == RUNAANS and champion.id == "Nilah":
+            continue
         if rule.mayhem_only and not mayhem_shop:
             continue
         if rule.early_only and (not early or item_count > 1):
@@ -498,6 +507,8 @@ def recommend_bridge(
         rule, mult, bonus = tune_rule(rule, kit)
         score = rule.base + bonus + sum(threats.value(tag) * weight for tag, weight in rule.weights)
         score *= champion_factor(kit, set(meta.tags)) * mult
+        if rule.item_id == ROD_OF_AGES:
+            score *= 0.1
         if rule.kind == "shields":
             score += 2.4
         if rule.kind == "boots":
@@ -512,7 +523,7 @@ def recommend_bridge(
         if score < floor:
             continue
         scored.append(ScoredBuy(score, rule.item_id, rule.kind, meta.name, rule))
-    plan = select_plan(scored, owned, items)
+    plan = select_plan(scored, owned, items, core_slots=BRIDGE_CORE_SLOTS)
     buys = buys_for_plan(
         plan,
         owned,

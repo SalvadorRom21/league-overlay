@@ -1105,6 +1105,7 @@ def select_plan(
     scored: list[ScoredBuy],
     owned: dict[int, int],
     items: dict[int, Item],
+    core_slots: int = CORE_SLOTS,
 ) -> list[ScoredBuy]:
     """Up to six finished items for one champion: own build, then the enemy answers."""
     chosen: list[ScoredBuy] = []
@@ -1170,7 +1171,7 @@ def select_plan(
         if owned.get(row.item_id, 0) <= 0 and completion_blocked(row.item_id, owned, items):
             continue
         legal_cores += 1
-    reserve = min(CORE_SLOTS, legal_cores)
+    reserve = min(core_slots, legal_cores)
     take(answers, PLAN_SLOTS - len(chosen) - reserve)
     take(cores, PLAN_SLOTS - len(chosen))
     take(answers, PLAN_SLOTS - len(chosen))

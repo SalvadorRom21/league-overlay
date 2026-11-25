@@ -156,7 +156,7 @@ STYLES: dict[str, Style] = {
         "attack damage and ability haste on spell casts",
         _prefs(crit=0.4, attack_speed=0.45, ad=1.25, haste=1.5),
         frozenset({MANAMUNE, SHOJIN}),
-        _mult({IE: 0.45, RFC: 0.3, PD: 0.3, KRAKEN: 0.35}),
+        _mult({IE: 0.45, RFC: 0.3, PD: 0.3, KRAKEN: 0.35, 3085: 0.3}),
     ),
     "crit_caster": Style(
         "Marksman",
@@ -165,7 +165,7 @@ STYLES: dict[str, Style] = {
         "Marksman",
         "critical strike without attack speed",
         _prefs(crit=1.3, attack_speed=0.5, ad=1.15, lethality=1.25, haste=1.15),
-        item_mult=_mult({RFC: 0.4, PD: 0.4, KRAKEN: 0.45}),
+        item_mult=_mult({RFC: 0.2, PD: 0.2, KRAKEN: 0.2, 3085: 0.2}),
     ),
     "caster": Style(
         "Fighter",

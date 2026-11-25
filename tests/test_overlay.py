@@ -362,6 +362,34 @@ class ItemTests(unittest.TestCase):
         self.assertTrue(any(name in ezreal_plan.plan for name in ("Manamune", "Spear of Shojin")))
         self.assertIn("Infinity Edge", yasuo_plan.plan)
 
+    def test_bridge_plan_fights_now(self) -> None:
+        items = shop(
+            item(3031, "Infinity Edge", 3500, tags=("Damage", "CriticalStrike"), abyss=True),
+            item(3094, "Rapid Firecannon", 2650, tags=("CriticalStrike", "AttackSpeed"), abyss=True),
+            item(3085, "Runaan's Hurricane", 2600, tags=("CriticalStrike", "AttackSpeed"), abyss=True),
+            item(3046, "Phantom Dancer", 2650, tags=("CriticalStrike", "AttackSpeed"), abyss=True),
+            item(3072, "Bloodthirster", 3400, tags=("Damage", "LifeSteal"), abyss=True),
+            item(3047, "Plated Steelcaps", 1200, tags=("Armor", "Boots"), abyss=True),
+            item(3033, "Mortal Reminder", 3000, tags=("Damage", "ArmorPenetration"), abyss=True),
+            item(6657, "Rod of Ages", 2600, tags=("Health", "SpellDamage"), abyss=True),
+            item(4633, "Riftmaker", 3100, tags=("Health", "SpellDamage", "AbilityHaste"), abyss=True),
+            item(3089, "Rabadon's Deathcap", 3500, tags=("SpellDamage",), abyss=True),
+            item(6655, "Luden's Echo", 2750, tags=("SpellDamage", "AbilityHaste"), abyss=True),
+            item(3020, "Sorcerer's Shoes", 1100, tags=("Boots", "MagicPenetration"), abyss=True),
+            item(3165, "Morellonomicon", 2950, tags=("Health", "SpellDamage", "AbilityHaste"), abyss=True),
+        )
+        enemies = [JINX, ZED, SYNDRA, MALPHITE, SORAKA]
+        twitch = champ(29, "Twitch", "Twitch", ["Marksman", "Assassin"], 9, 2, 2)
+        vlad = champ(8, "Vladimir", "Vladimir", ["Mage", "Fighter"], 2, 8, 6)
+        marksman = recommend_bridge(twitch, enemies, {}, 2500, items, mayhem_shop=True)
+        battle = recommend_bridge(vlad, enemies, {}, 2500, items, mayhem_shop=True)
+        self.assertIn("Infinity Edge", marksman.plan)
+        self.assertIn("Runaan's Hurricane", marksman.plan)
+        self.assertNotIn("Phantom Dancer", marksman.plan)
+        self.assertNotEqual(marksman.buys[0].completed_name, "Plated Steelcaps")
+        self.assertIn("Riftmaker", battle.plan)
+        self.assertNotIn("Rod of Ages", battle.plan)
+
     def test_tank_plan_stays_defensive_against_squishy_mages(self) -> None:
         items = shop(
             item(3111, "Mercury's Treads", 1250, tags=("Boots", "SpellBlock")),
