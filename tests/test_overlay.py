@@ -292,6 +292,76 @@ class ItemTests(unittest.TestCase):
         self.assertIn(full.buys[0].sell_name, {"Moonstone Renewer", "Redemption", "Staff of Flowing Water", "Imperial Mandate"})
         self.assertIn("does not fit", full.buys[0].sell_why)
 
+    def test_each_champion_style_changes_the_plan(self) -> None:
+        from league_overlay.catalog import Catalog
+        from league_overlay.kits import CHAMP_STYLES
+        from league_overlay.paths import DRAGON_CACHE
+
+        catalog = Catalog(DRAGON_CACHE)
+        catalog._load_cache()
+        snap = catalog.snapshot()
+        if snap.by_key:
+            missing = [champ.id for champ in snap.by_key.values() if champ.id not in CHAMP_STYLES]
+            self.assertEqual(missing, [])
+        items = shop(
+            item(6653, "Liandry's Torment", 3000, tags=("Health", "SpellDamage"), abyss=True),
+            item(3116, "Rylai's Crystal Scepter", 2600, tags=("Health", "SpellDamage"), abyss=True),
+            item(6655, "Luden's Echo", 2750, tags=("SpellDamage", "AbilityHaste"), abyss=True),
+            item(3089, "Rabadon's Deathcap", 3500, tags=("SpellDamage",), abyss=True),
+            item(3115, "Nashor's Tooth", 3000, tags=("AttackSpeed", "SpellDamage", "AbilityHaste"), abyss=True),
+            item(3100, "Lich Bane", 2900, tags=("SpellDamage", "AbilityHaste"), abyss=True),
+            item(4645, "Shadowflame", 3200, tags=("SpellDamage",), abyss=True),
+            item(4633, "Riftmaker", 3100, tags=("Health", "SpellDamage", "AbilityHaste"), abyss=True),
+            item(6657, "Rod of Ages", 2600, tags=("Health", "SpellDamage"), abyss=True),
+            item(3124, "Guinsoo's Rageblade", 3000, tags=("Damage", "AttackSpeed", "SpellDamage"), abyss=True),
+            item(3031, "Infinity Edge", 3500, tags=("Damage", "CriticalStrike"), abyss=True),
+            item(3094, "Rapid Firecannon", 2650, tags=("CriticalStrike", "AttackSpeed"), abyss=True),
+            item(3004, "Manamune", 2900, tags=("Damage", "Mana", "AbilityHaste"), abyss=True),
+            item(3161, "Spear of Shojin", 3100, tags=("Damage", "AbilityHaste", "Health"), abyss=True),
+            item(3078, "Trinity Force", 3333, tags=("Damage", "AttackSpeed", "AbilityHaste", "Health"), abyss=True),
+            item(3074, "Ravenous Hydra", 3300, tags=("Damage", "LifeSteal"), abyss=True),
+            item(3071, "Black Cleaver", 3000, tags=("Damage", "Health", "AbilityHaste", "ArmorPenetration"), abyss=True),
+            item(6692, "Eclipse", 2900, tags=("Damage", "AbilityHaste"), abyss=True),
+            item(3153, "Blade of The Ruined King", 3200, tags=("Damage", "AttackSpeed", "LifeSteal"), abyss=True),
+            item(3047, "Plated Steelcaps", 1200, tags=("Armor", "Boots"), abyss=True),
+            item(3020, "Sorcerer's Shoes", 1100, tags=("Boots", "MagicPenetration"), abyss=True),
+            item(3165, "Morellonomicon", 2950, tags=("Health", "SpellDamage", "AbilityHaste"), abyss=True),
+            item(3157, "Zhonya's Hourglass", 3250, tags=("Armor", "SpellDamage"), abyss=True),
+            item(6617, "Moonstone Renewer", 2200, tags=("Health", "SpellDamage"), abyss=True),
+            item(3083, "Warmog's Armor", 3100, tags=("Health",), abyss=True),
+            item(3068, "Sunfire Aegis", 2800, tags=("Health", "Armor"), abyss=True),
+        )
+        enemies = [JINX, ZED, SYNDRA, MALPHITE, SORAKA]
+        brand = champ(63, "Brand", "Brand", ["Mage", "Support"], 2, 9, 2)
+        azir = champ(268, "Azir", "Azir", ["Mage", "Marksman"], 6, 8, 3)
+        akali = champ(84, "Akali", "Akali", ["Assassin"], 5, 8, 3)
+        cass = champ(69, "Cassiopeia", "Cassiopeia", ["Mage"], 2, 9, 3)
+        garen = champ(86, "Garen", "Garen", ["Fighter", "Tank"], 7, 1, 7)
+        ezreal = champ(81, "Ezreal", "Ezreal", ["Marksman", "Mage"], 7, 6, 2)
+        yasuo = champ(157, "Yasuo", "Yasuo", ["Fighter", "Assassin"], 8, 4, 4)
+        brand_plan = recommend_bridge(brand, enemies, {}, 4000, items, mayhem_shop=True)
+        azir_plan = recommend_bridge(azir, enemies, {}, 4000, items, mayhem_shop=True)
+        akali_plan = recommend_bridge(akali, enemies, {}, 4000, items, mayhem_shop=True)
+        cass_plan = recommend_bridge(cass, enemies, {}, 4000, items, mayhem_shop=True)
+        garen_plan = recommend_bridge(garen, enemies, {}, 4000, items, mayhem_shop=True)
+        ezreal_plan = recommend_bridge(ezreal, enemies, {}, 4000, items, mayhem_shop=True)
+        yasuo_plan = recommend_bridge(yasuo, enemies, {}, 4000, items, mayhem_shop=True)
+        self.assertIn("Liandry's Torment", brand_plan.plan)
+        self.assertNotIn("Moonstone Renewer", brand_plan.plan)
+        self.assertIn("Nashor's Tooth", azir_plan.plan)
+        self.assertEqual(len(akali_plan.plan), 6)
+        self.assertTrue(any(name in akali_plan.plan for name in ("Lich Bane", "Rabadon's Deathcap", "Shadowflame")))
+        for name in cass_plan.plan:
+            self.assertNotIn("Boots", name)
+            self.assertNotIn("Shoes", name)
+            self.assertNotIn("Steelcaps", name)
+        self.assertIn("attack damage", garen_plan.focus)
+        self.assertTrue(any(name in garen_plan.plan for name in ("Black Cleaver", "Trinity Force", "Ravenous Hydra")))
+        self.assertNotIn("Warmog's Armor", garen_plan.plan)
+        self.assertNotIn("Rapid Firecannon", ezreal_plan.plan)
+        self.assertTrue(any(name in ezreal_plan.plan for name in ("Manamune", "Spear of Shojin")))
+        self.assertIn("Infinity Edge", yasuo_plan.plan)
+
     def test_tank_plan_stays_defensive_against_squishy_mages(self) -> None:
         items = shop(
             item(3111, "Mercury's Treads", 1250, tags=("Boots", "SpellBlock")),

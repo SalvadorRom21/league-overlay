@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from league_overlay.kits import style_for
 from league_overlay.model import Champion
 
 # Data Dragon's attack/magic bars mislabel these kits.
@@ -205,13 +206,30 @@ class Kit:
     pattern: str
     role: str
     focus: str = ""
+    prefs: tuple[tuple[str, float], ...] = ()
+    cores: frozenset[int] = frozenset()
+    item_mult: tuple[tuple[int, float], ...] = ()
+    boots: bool = True
 
 
 def champion_kit(champ: Champion) -> Kit:
     """The build this champion uses before the enemy team changes the details."""
+    style = style_for(champ.id)
+    if style is not None:
+        return Kit(
+            style.shop,
+            style.damage,
+            style.pattern,
+            style.role,
+            style.focus,
+            style.prefs,
+            style.cores,
+            style.item_mult,
+            style.boots,
+        )
     profile = build_profile(champ)
     if champ.id in ENCHANTERS:
-        return Kit(profile, "ap", "spell", "Enchanter", FOCUS_OVERRIDE.get(champ.id, ""))
+        return Kit(profile, "ap", "spell", "Enchanter")
     if profile == "Tank":
         return Kit(profile, "tank", "both", "Tank")
     kind = damage_type(champ)
@@ -227,38 +245,12 @@ def champion_kit(champ: Champion) -> Kit:
         pattern = "spell"
     else:
         pattern = "both"
-    return Kit(profile, kind, pattern, profile, FOCUS_OVERRIDE.get(champ.id, ""))
+    return Kit(profile, kind, pattern, profile)
 
 
-# Kits that do not spend gold the way their role usually does.
-# Jhin's attack speed is locked, and the bonus becomes a little attack damage.
-STAT_PREFS: dict[str, dict[str, float]] = {
-    "Jhin": {"crit": 1.8, "ad": 1.1, "lethality": 1.35, "attack_speed": 0.4, "lifesteal": 0.65},
-    "Zilean": {"ap": 1.2, "haste": 1.5},
-    "Karma": {"ap": 1.2, "haste": 1.25},
-    "Graves": {"crit": 1.25, "ad": 1.15, "lethality": 1.3, "attack_speed": 0.45},
-    "Ezreal": {"crit": 0.45, "attack_speed": 0.5, "ad": 1.15, "lethality": 0.8},
-    "Kalista": {"attack_speed": 1.4, "crit": 0.75, "lethality": 0.55},
-}
-
-FOCUS_OVERRIDE = {
-    "Jhin": "attack damage and crit. Bonus attack speed becomes a little attack damage",
-    "Graves": "attack damage and crit between reloads",
-    "Ezreal": "attack damage and ability haste on spell casts",
-    "Kalista": "attack speed on spears",
-    "Zilean": "ability power and ability haste on bombs. The rewind does not scale with heal power",
-    "Karma": "ability power on mantra",
-    "Heimerdinger": "ability power on turrets",
-    "Taliyah": "ability power on rocks",
-    "Morgana": "ability power on the pool and the binding",
-    "Bard": "ability power on meeps",
-    "Rakan": "ability power on the engage",
-}
-
-
-def champion_factor(champ_id: str, tags: set[str]) -> float:
+def champion_factor(kit: Kit, tags: set[str]) -> float:
     """Raise items his kit scales with, and sink items that stat does not use."""
-    prefs = STAT_PREFS.get(champ_id)
+    prefs = dict(kit.prefs)
     if not prefs:
         return 1.0
     factor = 1.0

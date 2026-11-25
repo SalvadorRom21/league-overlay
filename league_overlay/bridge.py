@@ -25,6 +25,7 @@ from league_overlay.items import (
     completion_blocked,
     item_fits_kit,
     select_plan,
+    tune_rule,
 )
 from league_overlay.model import Champion, Item
 from league_overlay.threats import (
@@ -145,7 +146,7 @@ RULES: tuple[BridgeRule, ...] = (
     BridgeRule(6664, frozenset({"Tank"}), (("ap", 0.35),), "mr", "Magic resist and a burn for a tank", base=1.15, job="core"),
     BridgeRule(3190, frozenset({"Tank", "Support"}), (("poke", 0.7), ("burst", 0.45)), "armor", "A team shield while everyone is in one fight"),
     BridgeRule(4628, AP, (("poke", 1.35),), "poke", "Damage on the long-range spells that define the bridge"),
-    BridgeRule(6653, AP, (("tank", 1.45), ("poke", 0.35), ("mr", 1.15)), "poke", "A burn into the frontline you cannot walk around"),
+    BridgeRule(6653, AP, (("tank", 1.45), ("poke", 0.35), ("mr", 1.15)), "burn", "A burn into the frontline you cannot walk around"),
     BridgeRule(6655, frozenset({"Mage", "Battlemage"}), (("burst", 0.8),), "poke", "Ability power that procs on spells", base=1.7, job="core"),
     BridgeRule(6695, CARRY, (("poke", 0.2),), "shields", "Cuts shields from an enemy item or augment", base=0.0),
     BridgeRule(3157, frozenset({"Mage", "Battlemage", "Support"}), (("burst", 1.25), ("ad", 0.55)), "anti_burst", "Stasis when the bridge fight collapses onto you"),
@@ -221,7 +222,14 @@ RULES: tuple[BridgeRule, ...] = (
     BridgeRule(6698, frozenset({"Assassin"}), (), "core", "Lethality and ability haste for abilities", base=1.55, job="core"),
     BridgeRule(3078, frozenset({"Fighter"}), (("attack_speed", 0.2),), "core", "Attack damage, attack speed, and ability haste for a fighter", base=1.65, job="core"),
     BridgeRule(6631, frozenset({"Fighter"}), (), "core", "Attack damage and a slow for a fighter", base=1.5, job="core"),
-    BridgeRule(3161, frozenset({"Fighter", "Assassin"}), (), "core", "Ability haste and attack damage", base=1.45, job="core"),
+    BridgeRule(3161, frozenset({"Fighter", "Assassin", "Marksman"}), (), "core", "Ability haste and attack damage", base=1.45, job="core"),
+    BridgeRule(3004, frozenset({"Marksman"}), (), "core", "Attack damage and mana that grows from spells", base=1.15, job="core"),
+    BridgeRule(3508, frozenset({"Marksman", "Fighter"}), (), "core", "Critical strike and a spellblade", base=1.2, job="core"),
+    BridgeRule(3115, frozenset({"Mage", "Battlemage"}), (), "core", "Ability power and attack speed on hit", base=1.3),
+    BridgeRule(3100, frozenset({"Mage", "Battlemage"}), (), "core", "Ability power and a spellblade", base=1.2),
+    BridgeRule(3116, frozenset({"Mage", "Battlemage"}), (), "core", "Ability power and a slow", base=1.15),
+    BridgeRule(6657, frozenset({"Mage", "Battlemage"}), (), "core", "Ability power and health that stacks", base=1.2),
+    BridgeRule(3124, frozenset({"Marksman", "Fighter"}), (), "core", "Attack speed that converts critical strike", base=1.25),
     BridgeRule(3074, AD_BRUISER, (), "cleave", "Damage and healing for a fighter", base=1.6, job="core"),
     BridgeRule(6617, frozenset({"Support"}), (), "core", "Healing for an enchanter", base=1.8, job="core"),
     BridgeRule(3107, frozenset({"Support"}), (), "core", "A team heal for an enchanter", base=1.6, job="core"),
@@ -424,7 +432,7 @@ def match_detail(
 def shop_profile(champion: Champion, owned: dict[int, int], items: dict[int, Item]) -> str:
     """The champion's own shop profile. Owned items do not change damage type."""
     del owned, items
-    return build_profile(champion)
+    return champion_kit(champion).profile
 
 
 def recommend_bridge(
@@ -464,6 +472,8 @@ def recommend_bridge(
     for rule in RULES:
         if profile not in rule.profiles:
             continue
+        if rule.kind == "boots" and not kit.boots:
+            continue
         if rule.mayhem_only and not mayhem_shop:
             continue
         if rule.early_only and (not early or item_count > 1):
@@ -485,8 +495,9 @@ def recommend_bridge(
         ignore = _other_finished_boots(owned, items, rule.item_id) if rule.kind == "boots" else None
         if not owned_this and completion_blocked(rule.item_id, owned, items, ignore):
             continue
-        score = rule.base + sum(threats.value(tag) * weight for tag, weight in rule.weights)
-        score *= champion_factor(champion.id, set(meta.tags))
+        rule, mult, bonus = tune_rule(rule, kit)
+        score = rule.base + bonus + sum(threats.value(tag) * weight for tag, weight in rule.weights)
+        score *= champion_factor(kit, set(meta.tags)) * mult
         if rule.kind == "shields":
             score += 2.4
         if rule.kind == "boots":

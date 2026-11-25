@@ -13,7 +13,7 @@ from collections import Counter
 from dataclasses import dataclass, replace
 
 from league_overlay.model import Champion, Item
-from league_overlay.threats import HEAL_CHAMPS, Kit, Threats, build_profile, champion_factor, champion_kit, kit_focus, summarize
+from league_overlay.threats import HEAL_CHAMPS, Kit, Threats, champion_factor, champion_kit, kit_focus, summarize
 
 MIN_SCORE = 1.6
 # The last slots of a six-item plan can sit under the counter cutoff.
@@ -178,7 +178,7 @@ RULES: tuple[ItemRule, ...] = (
     ItemRule(6694, AD_BRUISER, (("tank", 1.55),), "pen", "Armor penetration on abilities"),
     ItemRule(3135, AP, (("tank", 1.7), ("mr", 1.5)), "pen", "Magic penetration"),
     ItemRule(3137, AP, (("tank", 1.45), ("mr", 1.3)), "pen", "Magic penetration"),
-    ItemRule(6653, AP, (("tank", 1.65), ("mr", 1.2)), "pen", "A max-health burn"),
+    ItemRule(6653, AP, (("tank", 1.65), ("mr", 1.2)), "burn", "A max-health burn"),
     ItemRule(8010, frozenset({"Mage", "Battlemage"}), (("tank", 1.4), ("mr", 1.1)), "pen", "Magic resist shred"),
     ItemRule(
         3157,
@@ -227,7 +227,14 @@ RULES: tuple[ItemRule, ...] = (
     ItemRule(6698, frozenset({"Assassin"}), (), "core", "Lethality and ability haste for abilities", 1.55, "core"),
     ItemRule(3078, frozenset({"Fighter"}), (("attack_speed", 0.2),), "core", "Attack damage, attack speed, and ability haste for a fighter", 1.65, "core"),
     ItemRule(6631, frozenset({"Fighter"}), (), "core", "Attack damage and a slow for a fighter", 1.5, "core"),
-    ItemRule(3161, frozenset({"Fighter", "Assassin"}), (), "core", "Ability haste and attack damage", 1.45, "core"),
+    ItemRule(3161, frozenset({"Fighter", "Assassin", "Marksman"}), (), "core", "Ability haste and attack damage", 1.45, "core"),
+    ItemRule(3004, frozenset({"Marksman"}), (), "core", "Attack damage and mana that grows from spells", 1.15, "core"),
+    ItemRule(3508, frozenset({"Marksman", "Fighter"}), (), "core", "Critical strike and a spellblade", 1.2, "core"),
+    ItemRule(3115, frozenset({"Mage", "Battlemage"}), (), "core", "Ability power and attack speed on hit", 1.3),
+    ItemRule(3100, frozenset({"Mage", "Battlemage"}), (), "core", "Ability power and a spellblade", 1.2),
+    ItemRule(3116, frozenset({"Mage", "Battlemage"}), (), "core", "Ability power and a slow", 1.15),
+    ItemRule(6657, frozenset({"Mage", "Battlemage"}), (), "core", "Ability power and health that stacks", 1.2),
+    ItemRule(3124, frozenset({"Marksman", "Fighter"}), (), "core", "Attack speed that converts critical strike", 1.25),
     ItemRule(3074, AD_BRUISER, (), "cleave", "Damage and healing for a fighter", 1.6, "core"),
     ItemRule(3083, frozenset({"Tank"}), (), "sustain", "Health for a tank", 1.2, "core"),
     ItemRule(6617, frozenset({"Support"}), (), "core", "Healing for an enchanter", 1.8, "core"),
@@ -1048,6 +1055,15 @@ def _in_progress(item_id: int, owned: dict[int, int], items: dict[int, Item]) ->
     return any(owned.get(part, 0) > 0 and part != item_id for part in parts)
 
 
+def tune_rule(rule, kit: Kit):
+    """Promote a kit's own item into a core slot, and scale the score."""
+    mult = dict(kit.item_mult).get(rule.item_id, 1.0)
+    bonus = 1.5 if rule.item_id in kit.cores else 0.0
+    if rule.item_id in kit.cores:
+        rule = replace(rule, job="core")
+    return rule, mult, bonus
+
+
 def _is_core(row: ScoredBuy) -> bool:
     return getattr(row.rule, "job", "answer") == "core"
 
@@ -1297,8 +1313,8 @@ def advise(
     """The six-item plan, and the next buys that finish it."""
     threats = summarize(enemies)
     absorb_pressure(threats, enemy_builds, items)
-    profile = build_profile(champion)
     kit = champion_kit(champion)
+    profile = kit.profile
     grievous_allow = _grievous_allow(owned)
     owned_boots = _finished_boots_id(owned, items)
     owned_boot = items.get(owned_boots) if owned_boots else None
@@ -1306,6 +1322,8 @@ def advise(
     scored: list[ScoredBuy] = []
     for rule in RULES:
         if profile not in rule.profiles:
+            continue
+        if rule.kind == "boots" and not kit.boots:
             continue
         owned_this = owned.get(rule.item_id, 0) > 0
         if rule.kind == "boots" and boots_fit and rule.item_id != owned_boots:
@@ -1320,8 +1338,9 @@ def advise(
         ignore = _other_finished_boots(owned, items, rule.item_id) if rule.kind == "boots" else None
         if not owned_this and completion_blocked(rule.item_id, owned, items, ignore):
             continue
-        score = rule.base + sum(threats.value(tag) * weight for tag, weight in rule.weights)
-        score *= champion_factor(champion.id, set(meta.tags))
+        rule, mult, bonus = tune_rule(rule, kit)
+        score = rule.base + bonus + sum(threats.value(tag) * weight for tag, weight in rule.weights)
+        score *= champion_factor(kit, set(meta.tags)) * mult
         if rule.item_id == 3065 and champion.id in HEAL_CHAMPS and threats.ap >= 1:
             score += 1.8
         floor = 0.0 if rule.kind == "boots" else PLAN_FLOOR
